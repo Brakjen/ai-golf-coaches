@@ -1,0 +1,41 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.6.8
+    hooks:
+      - id: ruff
+        name: Ruff Docstring Linting
+        args: [ "--select=D", "--ignore=D100,D104", "--fix" ]
+      - id: ruff
+        name: Ruff Type Linting
+        args: [ "--select=ANN,TCH", "--ignore=ANN101,ANN401", "--fix" ]
+      - id: ruff-format
+        name: Ruff Formatting
+      - id: ruff
+        name: Ruff Code Style
+        args: [ "--select=E,W,I,SIM,TID,C4,DTZ", "--ignore=E501,TID252", "--fix" ]
+      - id: ruff
+        name: Ruff Pyflakes
+        args: [ "--select=F", "--fix" ]
+      - id: ruff
+        name: Ruff PyTest
+        args: [ "--select=PT", "--fix", "--ignore=PT003" ]
+      - id: ruff
+        name: Ruff PEP8 Naming
+        args: [ "--select=N", "--fix" ]
+      - id: ruff
+        name: Ruff Pandas
+        args: [ "--select=PD", "--fix", "--ignore=PD901" ]
+      - id: ruff
+        name: Ruff Print Statements
+        args: [ "--select=T20" ]
+      - id: ruff
+        name: "Ruff Remove Trailing Whitespace"
+        args: [ "--select=W291", "--fix" ]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.2.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: detect-private-key
