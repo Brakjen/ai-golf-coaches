@@ -1,0 +1,16 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "ai_golf_coaches"
+authors = ["Anders Brakestad"]
+description = "AI golf coaches from youtube transcripts."
+readme = "README.md"
+version = "0.0.1"
+
+[[tool.poetry.packages]]
+include = "ai_golf_coaches"
+
+[tool.poetry.dependencies]
+python = "^3.12"

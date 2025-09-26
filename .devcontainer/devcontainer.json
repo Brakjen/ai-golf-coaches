@@ -1,0 +1,59 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "Alarm Dashboard Backend Development Environment",
+	"image": "mcr.microsoft.com/devcontainers/python:3.12",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	"features": {
+	},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	"postCreateCommand": "bash .devcontainer/post_create.sh",
+	"postAttachCommand": "source .devcontainer/post_attach.sh",
+
+	// Configure tool-specific properties.
+	"customizations": {
+        "vscode": {
+            "extensions": [
+                "github.copilot",
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-python.debugpy",
+                "mechatroner.rainbow-csv",
+                "ms-azuretools.vscode-docker",
+				"ms-toolsai.jupyter",
+				"takumii.markdowntable"
+            ],
+			"settings": {
+				"python.terminal.activateEnvInCurrentTerminal": true,
+				"python.defaultInterpreterPath": ".venv/bin/python",
+				"python.testing.pytestArgs": [
+					"tests"
+				],
+				"python.testing.unittestEnabled": false,
+				"python.testing.pytestEnabled": true,
+				"editor.rulers": [80, 120],
+				"editor.semanticTokenColorCustomizations": {
+					"rules": {
+						"*.typeHint": {
+						"foreground": "#bbbbbb",
+						"fontStyle": "italic"
+						},
+						"class.typeHint.builtin": {
+						"foreground": "#bbbbbb",
+						"fontStyle": "italic"
+						}
+					}
+				}
+			}
+        }
+    }
+
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}
