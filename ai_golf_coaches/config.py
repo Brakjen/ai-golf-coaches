@@ -81,6 +81,26 @@ class YouTubeSettings(BaseModel):
     http_timeout_secs: int = 20
 
 
+class ProxyConfig(BaseModel):
+    """Configuration for proxy server access.
+
+    Contains credentials and connection details for accessing a proxy server,
+    which may be used for routing API requests.
+
+    Attributes:
+        username: Proxy server username.
+        password: Secret password for proxy server.
+        port: Proxy server port number (default is 80).
+        endpoint: Proxy server endpoint URL (default is 'proxy.webshare.io').
+
+    """
+
+    username: str
+    password: SecretStr
+    port: int = 80
+    endpoint: str = "proxy.webshare.io"
+
+
 class Settings(BaseSettings):
     """Main application settings.
 
@@ -93,9 +113,14 @@ class Settings(BaseSettings):
     """
 
     youtube: YouTubeSettings = YouTubeSettings(
-        api_key=SecretStr("dummy"),  # Will be overridden by env vars
+        api_key=SecretStr("api_key"),  # Will be overridden by env vars
         egs=ChannelRef(channel_id=None, handle="@elitegolfschools"),
         milo=ChannelRef(channel_id=None, handle="@milolinesgolf"),
+    )
+
+    proxy: ProxyConfig = ProxyConfig(
+        username="proxy_user",  # Will be overridden by env vars
+        password=SecretStr("proxy_password"),
     )
 
     model_config = SettingsConfigDict(
