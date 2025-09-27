@@ -1,5 +1,7 @@
 import logging
 
+from . import config, models, transcripts, utils, youtube
+
 # Configure logging for the entire package
 logging.basicConfig(
     level=logging.INFO,
@@ -10,11 +12,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("AI Golf Coaches package initialized")
 
-from . import config, models, utils, youtube
-
 __all__ = [
     "config",
     "models",
     "youtube",
     "utils",
+    "transcripts",
 ]
