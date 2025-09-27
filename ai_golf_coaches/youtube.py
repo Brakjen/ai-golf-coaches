@@ -14,7 +14,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -22,6 +22,9 @@ from pydantic import BaseModel, HttpUrl
 
 from ai_golf_coaches.config import get_settings
 from ai_golf_coaches.models import VideoMeta
+
+if TYPE_CHECKING:
+    import googleapiclient.discovery.Resource
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -35,10 +38,10 @@ def channel_dir(name: str) -> Path:
     Creates the directory structure if it doesn't exist.
 
     Args:
-        name: Channel name or handle (without @).
+        name (str): Channel name or handle (without @).
 
     Returns:
-        Path object pointing to the channel's data directory.
+        Path: Path object pointing to the channel's data directory.
 
     """
     d = Path("data") / "raw" / name
@@ -50,10 +53,10 @@ def catalog_path(name: str) -> Path:
     """Get the file path for a channel's video catalog.
 
     Args:
-        name: Channel name or handle (without @).
+        name (str): Channel name or handle (without @).
 
     Returns:
-        Path object pointing to the channel's catalog JSON file.
+        Path: Path object pointing to the channel's catalog JSON file.
 
     """
     return channel_dir(name) / "_catalog.json"
@@ -62,14 +65,14 @@ def catalog_path(name: str) -> Path:
 # YouTube API
 
 
-def yt_client() -> Any:
+def yt_client() -> googleapiclient.discovery.Resource:
     """Create and return a YouTube API client.
 
     Uses the API key from application settings to authenticate
     with the YouTube Data API v3.
 
     Returns:
-        Any: Configured YouTube API client resource.
+        googleapiclient.discovery.Resource: Configured YouTube API client resource.
 
     """
     cfg = get_settings()
@@ -86,10 +89,10 @@ def get_uploads_playlist_id(yt: Any, channel_id: str) -> str:
 
     Args:
         yt (Any): YouTube API client instance.
-        channel_id: YouTube channel ID (starts with 'UC').
+        channel_id (str): YouTube channel ID (starts with 'UC').
 
     Returns:
-        The playlist ID containing all uploaded videos for the channel.
+        str: The playlist ID containing all uploaded videos for the channel.
 
     Raises:
         KeyError: If the channel is not found or has no uploads playlist.
@@ -107,11 +110,11 @@ def list_all_uploads(yt: Any, uploads_pid: str, page_size: int = 50) -> List[Dic
 
     Args:
         yt (Any): YouTube API client instance.
-        uploads_pid: Playlist ID for the channel's uploads.
-        page_size: Number of results per API page (max 50).
+        uploads_pid (str): Playlist ID for the channel's uploads.
+        page_size (int, optional): Number of results per API page (max 50). Defaults to 50.
 
     Returns:
-        List of video items from the playlist.
+        List[Dict]: List of video items from the playlist.
 
     Raises:
         HttpError: For non-recoverable API errors.
@@ -153,10 +156,10 @@ def _iso8601_to_seconds(s: str) -> int:
     Parses YouTube's PT format (e.g., 'PT1H23M45S') into seconds.
 
     Args:
-        s: ISO 8601 duration string from YouTube API.
+        s (str): ISO 8601 duration string from YouTube API.
 
     Returns:
-        Total duration in seconds, or 0 if parsing fails.
+        int: Total duration in seconds, or 0 if parsing fails.
 
     """
     m = _DUR_RE.fullmatch(s or "")
@@ -179,7 +182,7 @@ def _videos_details_by_ids(yt: Any, ids: List[str]) -> Dict[str, Dict]:
         ids (List[str]): List of YouTube video IDs.
 
     Returns:
-        Dictionary mapping video IDs to their detailed information.
+        Dict[str, Dict]: Dictionary mapping video IDs to their detailed information.
 
     """
     out: Dict[str, Dict] = {}
@@ -212,13 +215,13 @@ def build_catalog_for_channel_id(
     structured metadata for each video.
 
     Args:
-        channel_id: YouTube channel ID (starts with 'UC').
-        page_size: Number of results per API page (max 50).
-        include_shorts: Whether to include YouTube Shorts in results.
-        duration_thrs_seconds: Minimum duration threshold for filtering shorts.
+        channel_id (str): YouTube channel ID (starts with 'UC').
+        page_size (int, optional): Number of results per API page (max 50). Defaults to 50.
+        include_shorts (bool, optional): Whether to include YouTube Shorts in results. Defaults to False.
+        duration_thrs_seconds (int, optional): Minimum duration threshold for filtering shorts. Defaults to 360.
 
     Returns:
-        List of VideoMeta objects sorted by publication date (newest first).
+        List[VideoMeta]: List of VideoMeta objects sorted by publication date (newest first).
 
     Raises:
         HttpError: If YouTube API requests fail.
@@ -272,10 +275,10 @@ def _dump_model(m: BaseModel) -> dict:
     for complex types like HttpUrl.
 
     Args:
-        m: Pydantic model instance to serialize.
+        m (BaseModel): Pydantic model instance to serialize.
 
     Returns:
-        Dictionary representation suitable for JSON serialization.
+        dict: Dictionary representation suitable for JSON serialization.
 
     """
     # Pydantic v2
@@ -292,11 +295,11 @@ def save_catalog(channel_handle: str, metas: List[VideoMeta]) -> Path:
     data directory.
 
     Args:
-        channel_handle: Channel name or handle (@ prefix optional).
-        metas: List of video metadata to save.
+        channel_handle (str): Channel name or handle (@ prefix optional).
+        metas (List[VideoMeta]): List of video metadata to save.
 
     Returns:
-        Path where the catalog was saved.
+        Path: Path where the catalog was saved.
 
     """
     logger.info(
@@ -319,10 +322,10 @@ def load_catalog(channel_handle: str) -> List[VideoMeta]:
     catalog JSON file.
 
     Args:
-        channel_handle: Channel name or handle (@ prefix optional).
+        channel_handle (str): Channel name or handle (@ prefix optional).
 
     Returns:
-        List of VideoMeta objects, or empty list if catalog doesn't exist.
+        List[VideoMeta]: List of VideoMeta objects, or empty list if catalog doesn't exist.
 
     Raises:
         JSONDecodeError: If the catalog file is corrupted.

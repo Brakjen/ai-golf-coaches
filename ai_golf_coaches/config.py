@@ -46,7 +46,7 @@ class ChannelRef(BaseModel):
         with proper '@' prefix formatting.
 
         Returns:
-            String suitable for YouTube API channel identification.
+            str: String suitable for YouTube API channel identification.
 
         Raises:
             ValueError: If neither channel_id nor handle is provided.
@@ -92,7 +92,11 @@ class Settings(BaseSettings):
 
     """
 
-    youtube: YouTubeSettings
+    youtube: YouTubeSettings = YouTubeSettings(
+        api_key=SecretStr("dummy"),  # Will be overridden by env vars
+        egs=ChannelRef(channel_id=None, handle="@elitegolfschools"),
+        milo=ChannelRef(channel_id=None, handle="@milolinesgolf"),
+    )
 
     model_config = SettingsConfigDict(
         env_nested_delimiter="__",
@@ -108,7 +112,7 @@ def get_settings() -> Settings:
     and returning the cached instance on subsequent calls.
 
     Returns:
-        Configured Settings instance with all application settings.
+        Settings: Configured Settings instance with all application settings.
 
     """
     return Settings()
