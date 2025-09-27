@@ -14,7 +14,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -22,9 +22,6 @@ from pydantic import BaseModel, HttpUrl
 
 from ai_golf_coaches.config import get_settings
 from ai_golf_coaches.models import VideoMeta
-
-if TYPE_CHECKING:
-    import googleapiclient.discovery.Resource
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -65,14 +62,14 @@ def catalog_path(name: str) -> Path:
 # YouTube API
 
 
-def yt_client() -> googleapiclient.discovery.Resource:
+def yt_client() -> Any:
     """Create and return a YouTube API client.
 
     Uses the API key from application settings to authenticate
     with the YouTube Data API v3.
 
     Returns:
-        googleapiclient.discovery.Resource: Configured YouTube API client resource.
+        Any: Configured YouTube API client resource from googleapiclient.discovery.build().
 
     """
     cfg = get_settings()
@@ -88,7 +85,7 @@ def get_uploads_playlist_id(yt: Any, channel_id: str) -> str:
     """Get the uploads playlist ID for a YouTube channel.
 
     Args:
-        yt (Any): YouTube API client instance.
+        yt (Any): YouTube API client resource from googleapiclient.discovery.build().
         channel_id (str): YouTube channel ID (starts with 'UC').
 
     Returns:
@@ -109,7 +106,7 @@ def list_all_uploads(yt: Any, uploads_pid: str, page_size: int = 50) -> List[Dic
     temporary errors (403, 429, 500, 503).
 
     Args:
-        yt (Any): YouTube API client instance.
+        yt (Any): YouTube API client resource from googleapiclient.discovery.build().
         uploads_pid (str): Playlist ID for the channel's uploads.
         page_size (int, optional): Number of results per API page (max 50). Defaults to 50.
 
@@ -178,7 +175,7 @@ def _videos_details_by_ids(yt: Any, ids: List[str]) -> Dict[str, Dict]:
     includes rate limiting delays between requests.
 
     Args:
-        yt (Any): YouTube API client instance.
+        yt (Any): YouTube API client resource from googleapiclient.discovery.build().
         ids (List[str]): List of YouTube video IDs.
 
     Returns:
