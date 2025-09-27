@@ -81,21 +81,35 @@ def yt_client() -> Any:
     )
 
 
-def get_uploads_playlist_id(yt: Any, channel_id: str) -> str:
+def get_uploads_playlist_id(yt: Any, channel_identifier: str) -> str:
     """Get the uploads playlist ID for a YouTube channel.
 
     Args:
         yt (Any): YouTube API client resource from googleapiclient.discovery.build().
-        channel_id (str): YouTube channel ID (starts with 'UC').
+        channel_identifier (str): YouTube channel ID (UC...) or handle (@...).
 
     Returns:
         str: The playlist ID containing all uploaded videos for the channel.
 
     Raises:
-        KeyError: If the channel is not found or has no uploads playlist.
+        ValueError: If the channel is not found.
 
     """
-    r = yt.channels().list(part="contentDetails", id=channel_id).execute()
+    if channel_identifier.startswith("@") or not channel_identifier.startswith("UC"):
+        # It's a handle - use forHandle parameter
+        handle = (
+            channel_identifier
+            if channel_identifier.startswith("@")
+            else f"@{channel_identifier}"
+        )
+        r = yt.channels().list(part="contentDetails", forHandle=handle[1:]).execute()
+    else:
+        # It's a channel ID - use id parameter
+        r = yt.channels().list(part="contentDetails", id=channel_identifier).execute()
+
+    if not r.get("items"):
+        raise ValueError(f"Channel not found: {channel_identifier}")
+
     return r["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
 
@@ -199,33 +213,93 @@ def _videos_details_by_ids(yt: Any, ids: List[str]) -> Dict[str, Dict]:
     return out
 
 
-def build_catalog_for_channel_id(
-    channel_id: str,
-    page_size: int = 50,
-    *,
-    include_shorts: bool = False,
-    duration_thrs_seconds: int = 360,
-) -> List[VideoMeta]:
-    """Build a complete video catalog for a YouTube channel.
+def resolve_channel_identifier(channel_identifier: str) -> tuple[str, str]:
+    """Resolve a channel identifier to both ID and handle for API calls and logging.
 
-    Fetches all videos from a channel, filters by duration, and returns
-    structured metadata for each video.
+    Takes either a channel ID or handle and resolves it using the configuration
+    to return both the ID (for API calls) and handle (for logging).
 
     Args:
-        channel_id (str): YouTube channel ID (starts with 'UC').
-        page_size (int, optional): Number of results per API page (max 50). Defaults to 50.
-        include_shorts (bool, optional): Whether to include YouTube Shorts in results. Defaults to False.
-        duration_thrs_seconds (int, optional): Minimum duration threshold for filtering shorts. Defaults to 360.
+        channel_identifier (str): YouTube channel ID (UC...) or handle (@...).
 
     Returns:
-        List[VideoMeta]: List of VideoMeta objects sorted by publication date (newest first).
+        tuple[str, str]: A tuple of (channel_id, handle) where:
+            - channel_id: The actual channel ID for API calls
+            - handle: The human-readable handle for logging
 
     Raises:
-        HttpError: If YouTube API requests fail.
-        KeyError: If channel is not found.
+        ValueError: If handle is provided but not found in configuration.
 
     """
-    logger.info(f"Building catalog for channel id: {channel_id}")
+    config = get_settings()
+
+    if channel_identifier.startswith("@"):
+        # It's a handle - look up in config
+        handle = channel_identifier
+        channel_ref = None
+
+        # Check configured channels
+        if config.youtube.egs.handle == handle:
+            channel_ref = config.youtube.egs
+        elif config.youtube.milo.handle == handle:
+            channel_ref = config.youtube.milo
+
+        if not channel_ref:
+            available_handles = [config.youtube.egs.handle, config.youtube.milo.handle]
+            raise ValueError(
+                f"Handle '{handle}' not found in configuration. Available handles: {available_handles}"
+            )
+
+        # Get the actual channel ID for API calls
+        if channel_ref.is_id():
+            channel_id = channel_ref.channel_id
+        else:
+            # If no ID is stored, we need to resolve the handle via API
+            channel_id = (
+                channel_identifier  # Will be handled by get_uploads_playlist_id
+            )
+
+        return channel_id, handle
+
+    else:
+        # It's a channel ID - find corresponding handle for logging
+        channel_id = channel_identifier
+        handle = channel_id  # fallback
+
+        # Look up handle in config
+        if channel_id == config.youtube.egs.channel_id:
+            handle = config.youtube.egs.handle or config.youtube.egs.ref_for_api()
+        elif channel_id == config.youtube.milo.channel_id:
+            handle = config.youtube.milo.handle or config.youtube.milo.ref_for_api()
+
+        return channel_id, handle
+
+
+def build_catalog_for_channel_id(
+    channel_identifier: str, page_size: int = 50, *, duration_thrs_seconds: int = 360
+) -> List[VideoMeta]:
+    """Build a video catalog for a YouTube channel.
+
+    Accepts either a channel ID (starting with 'UC') or a handle (starting with '@').
+    If a handle is provided, looks up the corresponding channel configuration.
+    Filters out YouTube Shorts based on duration threshold.
+
+    Args:
+        channel_identifier (str): YouTube channel ID (UC...) or handle (@...).
+        page_size (int, optional): Number of results per API page (max 50). Defaults to 50.
+        duration_thrs_seconds (int, optional): Minimum duration to exclude Shorts. Defaults to 360.
+
+    Returns:
+        List[VideoMeta]: List of video metadata objects for the channel.
+
+    Raises:
+        ValueError: If handle is provided but not found in configuration.
+
+    """
+    # Resolve channel identifier to ID and handle
+    channel_id, handle = resolve_channel_identifier(channel_identifier)
+    logger.info(f"Building catalog for channel: {handle} (ID: {channel_id})")
+
     yt = yt_client()
     pid = get_uploads_playlist_id(yt, channel_id)
     items = list_all_uploads(yt, pid, page_size=page_size)
@@ -233,36 +307,48 @@ def build_catalog_for_channel_id(
     # Fetch durations to filter Shorts
     ids = [it["contentDetails"]["videoId"] for it in items]
     details = _videos_details_by_ids(yt, ids)
+    logger.info(
+        f"Found {len(items)} videos, filtering shorts (threshold: {duration_thrs_seconds}s)"
+    )
 
-    metas: List[VideoMeta] = []
+    # Process videos and filter
+    catalog: List[VideoMeta] = []
+    shorts_count = 0
+
     for item in items:
-        snip = item["snippet"]
-        vid = item["contentDetails"]["videoId"]
+        video_id = item["contentDetails"]["videoId"]
+        detail = details.get(video_id)
 
-        det = details.get(vid)
-        if not det:
-            continue  # rare, but skip if missing detail
-
-        # Filter out Shorts unless explicitly included
-        dur_iso = det.get("contentDetails", {}).get("duration", "PT0S")
-        seconds = _iso8601_to_seconds(dur_iso)
-        if not include_shorts and seconds < duration_thrs_seconds:
+        if not detail:
+            logger.warning(f"No details found for video {video_id}, skipping")
             continue
 
-        metas.append(
-            VideoMeta(
-                video_id=vid,
-                title=snip.get("title", ""),
-                description=snip.get("description"),
-                published_at=snip.get("publishedAt", ""),
-                channel_title=snip.get("channelTitle"),
-                url=HttpUrl(f"https://youtu.be/{vid}"),
-            )
+        # Parse duration and filter Shorts
+        duration_iso = detail["contentDetails"]["duration"]
+        duration_seconds = _iso8601_to_seconds(duration_iso)
+
+        if duration_seconds < duration_thrs_seconds:
+            shorts_count += 1
+            logger.debug(f"Skipping Short: {video_id} ({duration_seconds}s)")
+            continue
+
+        # Extract metadata
+        snippet = item["snippet"]
+        video_meta = VideoMeta(
+            video_id=video_id,
+            title=snippet["title"],
+            description=snippet.get("description"),
+            published_at=snippet.get("publishedAt"),
+            channel_title=snippet.get("channelTitle"),
+            url=HttpUrl(f"https://www.youtube.com/watch?v={video_id}"),
         )
 
-    # Optional: newest first
-    metas.sort(key=lambda m: m.published_at or "", reverse=True)
-    return metas
+        catalog.append(video_meta)
+
+    logger.info(
+        f"Catalog built: {len(catalog)} videos, {shorts_count} shorts filtered out"
+    )
+    return catalog
 
 
 def _dump_model(m: BaseModel) -> dict:
@@ -285,7 +371,7 @@ def _dump_model(m: BaseModel) -> dict:
     return json.loads(m.json())  # uses pydantic encoders
 
 
-def save_catalog(channel_handle: str, metas: List[VideoMeta]) -> Path:
+def save_catalog(channel_handle: str, catalog: List[VideoMeta]) -> Path:
     """Save video catalog to local storage.
 
     Serializes video metadata to JSON and saves to the channel's
@@ -293,21 +379,21 @@ def save_catalog(channel_handle: str, metas: List[VideoMeta]) -> Path:
 
     Args:
         channel_handle (str): Channel name or handle (@ prefix optional).
-        metas (List[VideoMeta]): List of video metadata to save.
+        catalog (List[VideoMeta]): List of video metadata to save.
 
     Returns:
         Path: Path where the catalog was saved.
 
     """
     logger.info(
-        f"Saving catalog for channel: {channel_handle} with {len(metas)} videos"
+        f"Saving catalog for channel: {channel_handle} with {len(catalog)} videos"
     )
     if channel_handle.startswith("@"):
         channel_handle = channel_handle[1:]
     path = catalog_path(channel_handle)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    payload = [_dump_model(m) for m in metas]
+    payload = [_dump_model(m) for m in catalog]
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
     return path
 
