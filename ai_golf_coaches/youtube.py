@@ -1,3 +1,12 @@
+"""YouTube API integration and data management.
+
+Provides functionality for:
+- Fetching video catalogs from YouTube channels
+- Managing local data storage for video metadata
+- Handling YouTube API authentication and rate limiting
+- Processing video transcripts and metadata
+"""
+
 from __future__ import annotations
 
 import json
@@ -5,7 +14,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -21,19 +30,48 @@ logger = logging.getLogger(__name__)
 
 
 def channel_dir(name: str) -> Path:
+    """Create and return the data directory path for a channel.
+
+    Creates the directory structure if it doesn't exist.
+
+    Args:
+        name: Channel name or handle (without @).
+
+    Returns:
+        Path object pointing to the channel's data directory.
+
+    """
     d = Path("data") / "raw" / name
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def catalog_path(name: str) -> Path:
+    """Get the file path for a channel's video catalog.
+
+    Args:
+        name: Channel name or handle (without @).
+
+    Returns:
+        Path object pointing to the channel's catalog JSON file.
+
+    """
     return channel_dir(name) / "_catalog.json"
 
 
 # YouTube API
 
 
-def yt_client():
+def yt_client() -> Any:
+    """Create and return a YouTube API client.
+
+    Uses the API key from application settings to authenticate
+    with the YouTube Data API v3.
+
+    Returns:
+        Any: Configured YouTube API client resource.
+
+    """
     cfg = get_settings()
     return build(
         "youtube",
@@ -43,12 +81,42 @@ def yt_client():
     )
 
 
-def get_uploads_playlist_id(yt, channel_id: str) -> str:
+def get_uploads_playlist_id(yt: Any, channel_id: str) -> str:
+    """Get the uploads playlist ID for a YouTube channel.
+
+    Args:
+        yt (Any): YouTube API client instance.
+        channel_id: YouTube channel ID (starts with 'UC').
+
+    Returns:
+        The playlist ID containing all uploaded videos for the channel.
+
+    Raises:
+        KeyError: If the channel is not found or has no uploads playlist.
+
+    """
     r = yt.channels().list(part="contentDetails", id=channel_id).execute()
     return r["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
 
-def list_all_uploads(yt, uploads_pid: str, page_size: int = 50) -> List[Dict]:
+def list_all_uploads(yt: Any, uploads_pid: str, page_size: int = 50) -> List[Dict]:
+    """Fetch all videos from a YouTube channel's uploads playlist.
+
+    Handles pagination and rate limiting automatically, retrying on
+    temporary errors (403, 429, 500, 503).
+
+    Args:
+        yt (Any): YouTube API client instance.
+        uploads_pid: Playlist ID for the channel's uploads.
+        page_size: Number of results per API page (max 50).
+
+    Returns:
+        List of video items from the playlist.
+
+    Raises:
+        HttpError: For non-recoverable API errors.
+
+    """
     items: List[Dict] = []
     token: Optional[str] = None
     while True:
@@ -80,6 +148,17 @@ _DUR_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
 
 
 def _iso8601_to_seconds(s: str) -> int:
+    """Convert ISO 8601 duration string to total seconds.
+
+    Parses YouTube's PT format (e.g., 'PT1H23M45S') into seconds.
+
+    Args:
+        s: ISO 8601 duration string from YouTube API.
+
+    Returns:
+        Total duration in seconds, or 0 if parsing fails.
+
+    """
     m = _DUR_RE.fullmatch(s or "")
     if not m:
         return 0
@@ -89,8 +168,20 @@ def _iso8601_to_seconds(s: str) -> int:
     return h * 3600 + m_ * 60 + s_
 
 
-def _videos_details_by_ids(yt, ids: List[str]) -> Dict[str, Dict]:
-    """Batch videos.list (50 per call). Returns dict[videoId] -> detail item."""
+def _videos_details_by_ids(yt: Any, ids: List[str]) -> Dict[str, Dict]:
+    """Fetch detailed information for multiple videos in batches.
+
+    Processes video IDs in batches of 50 (YouTube API limit) and
+    includes rate limiting delays between requests.
+
+    Args:
+        yt (Any): YouTube API client instance.
+        ids (List[str]): List of YouTube video IDs.
+
+    Returns:
+        Dictionary mapping video IDs to their detailed information.
+
+    """
     out: Dict[str, Dict] = {}
     for i in range(0, len(ids), 50):
         batch = ids[i : i + 50]
@@ -115,6 +206,25 @@ def build_catalog_for_channel_id(
     include_shorts: bool = False,
     duration_thrs_seconds: int = 360,
 ) -> List[VideoMeta]:
+    """Build a complete video catalog for a YouTube channel.
+
+    Fetches all videos from a channel, filters by duration, and returns
+    structured metadata for each video.
+
+    Args:
+        channel_id: YouTube channel ID (starts with 'UC').
+        page_size: Number of results per API page (max 50).
+        include_shorts: Whether to include YouTube Shorts in results.
+        duration_thrs_seconds: Minimum duration threshold for filtering shorts.
+
+    Returns:
+        List of VideoMeta objects sorted by publication date (newest first).
+
+    Raises:
+        HttpError: If YouTube API requests fail.
+        KeyError: If channel is not found.
+
+    """
     logger.info(f"Building catalog for channel id: {channel_id}")
     yt = yt_client()
     pid = get_uploads_playlist_id(yt, channel_id)
@@ -156,6 +266,18 @@ def build_catalog_for_channel_id(
 
 
 def _dump_model(m: BaseModel) -> dict:
+    """Convert a Pydantic model to a JSON-serializable dictionary.
+
+    Handles both Pydantic v1 and v2 with proper JSON encoding
+    for complex types like HttpUrl.
+
+    Args:
+        m: Pydantic model instance to serialize.
+
+    Returns:
+        Dictionary representation suitable for JSON serialization.
+
+    """
     # Pydantic v2
     if hasattr(m, "model_dump"):
         return m.model_dump(mode="json")  # ensures HttpUrl -> str, etc.
@@ -164,6 +286,19 @@ def _dump_model(m: BaseModel) -> dict:
 
 
 def save_catalog(channel_handle: str, metas: List[VideoMeta]) -> Path:
+    """Save video catalog to local storage.
+
+    Serializes video metadata to JSON and saves to the channel's
+    data directory.
+
+    Args:
+        channel_handle: Channel name or handle (@ prefix optional).
+        metas: List of video metadata to save.
+
+    Returns:
+        Path where the catalog was saved.
+
+    """
     logger.info(
         f"Saving catalog for channel: {channel_handle} with {len(metas)} videos"
     )
@@ -178,6 +313,22 @@ def save_catalog(channel_handle: str, metas: List[VideoMeta]) -> Path:
 
 
 def load_catalog(channel_handle: str) -> List[VideoMeta]:
+    """Load video catalog from local storage.
+
+    Reads and deserializes video metadata from the channel's
+    catalog JSON file.
+
+    Args:
+        channel_handle: Channel name or handle (@ prefix optional).
+
+    Returns:
+        List of VideoMeta objects, or empty list if catalog doesn't exist.
+
+    Raises:
+        JSONDecodeError: If the catalog file is corrupted.
+        ValidationError: If the data doesn't match VideoMeta schema.
+
+    """
     if channel_handle.startswith("@"):
         channel_handle = channel_handle[1:]
     path = catalog_path(channel_handle)
