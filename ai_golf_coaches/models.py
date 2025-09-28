@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field, HttpUrl, PositiveFloat
+from pydantic import BaseModel, Field, HttpUrl
 
 
 class VideoMeta(BaseModel):
@@ -46,8 +46,8 @@ class TranscriptLine(BaseModel):
 
     """
 
-    start: PositiveFloat
-    duration: PositiveFloat
+    start: float = Field(ge=0, description="Start time in seconds (>= 0)")
+    duration: float = Field(gt=0, description="Duration in seconds (> 0)")
     text: str
 
 
