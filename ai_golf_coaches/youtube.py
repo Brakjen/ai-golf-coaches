@@ -21,7 +21,7 @@ from googleapiclient.errors import HttpError
 from pydantic import BaseModel, HttpUrl
 
 from ai_golf_coaches.config import get_settings
-from ai_golf_coaches.models import VideoMeta
+from ai_golf_coaches.models import RecordStatus, VideoMeta, VideoRecord
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -428,3 +428,167 @@ def load_catalog(channel_handle: str) -> List[VideoMeta]:
         return []
     data = json.loads(path.read_text(encoding="utf-8"))
     return [VideoMeta(**row) for row in data]
+
+
+def video_record_path(channel_name: str, video_id: str) -> Path:
+    """Get the file path for a video record JSON file.
+
+    Args:
+        channel_name (str): Name of the channel for directory organization.
+        video_id (str): YouTube video ID for the filename.
+
+    Returns:
+        Path: Path to the video record JSON file.
+
+    """
+    if channel_name.startswith("@"):
+        channel_name = channel_name[1:]
+    return channel_dir(channel_name) / f"{video_id}.json"
+
+
+def save_video_record(channel_name: str, record: VideoRecord) -> Path:
+    """Save a VideoRecord to a JSON file.
+
+    Args:
+        channel_name (str): Name of the channel for directory organization.
+        record (VideoRecord): The video record to save.
+
+    Returns:
+        Path: Path where the record was saved.
+
+    """
+    path = video_record_path(channel_name, record.meta.video_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Convert to dict and save as JSON
+    record_dict = record.model_dump(mode="json")
+    path.write_text(json.dumps(record_dict, ensure_ascii=False, indent=2))
+
+    logger.debug(f"Saved video record: {path}")
+    return path
+
+
+def load_video_record(channel_name: str, video_id: str) -> Optional[VideoRecord]:
+    """Load a VideoRecord from a JSON file.
+
+    Args:
+        channel_name (str): Name of the channel.
+        video_id (str): YouTube video ID.
+
+    Returns:
+        Optional[VideoRecord]: The loaded video record, or None if not found.
+
+    """
+    path = video_record_path(channel_name, video_id)
+
+    if not path.exists():
+        return None
+
+    try:
+        data = json.loads(path.read_text())
+        return VideoRecord.model_validate(data)
+    except Exception as e:
+        logger.error(f"Error loading video record {path}: {e}")
+        return None
+
+
+def save_video_records(
+    channel_name: Optional[str], records: List[VideoRecord]
+) -> List[Path]:
+    """Save multiple VideoRecords to individual JSON files.
+
+    Args:
+        channel_name (Optional[str]): Name of the channel for directory organization.
+        records (List[VideoRecord]): List of video records to save.
+
+    Returns:
+        List[Path]: List of paths where records were saved.
+
+    """
+    if channel_name is None:
+        raise ValueError("channel_name must be provided to save video records.")
+
+    saved_paths = []
+
+    for record in records:
+        path = save_video_record(channel_name, record)
+        saved_paths.append(path)
+
+    logger.info(f"Saved {len(records)} video records for channel '{channel_name}'")
+    return saved_paths
+
+
+def load_channel_records(channel_name: Optional[str]) -> List[VideoRecord]:
+    """Load all VideoRecords for a channel.
+
+    Args:
+        channel_name (Optional[str]): Name of the channel.
+
+    Returns:
+        List[VideoRecord]: List of all video records for the channel.
+
+    """
+    if channel_name is None:
+        raise ValueError("channel_name must be provided to load channel records.")
+
+    if channel_name.startswith("@"):
+        channel_name = channel_name[1:]
+
+    channel_path = channel_dir(channel_name)
+
+    if not channel_path.exists():
+        logger.info(f"No records found for channel '{channel_name}'")
+        return []
+
+    records = []
+    json_files = list(channel_path.glob("*.json"))
+
+    # Skip the _catalog.json file
+    json_files = [f for f in json_files if f.name != "_catalog.json"]
+
+    for json_file in json_files:
+        video_id = json_file.stem
+        record = load_video_record(channel_name, video_id)
+        if record:
+            records.append(record)
+        else:
+            logger.warning(f"Failed to load record from {json_file}")
+
+    logger.info(f"Loaded {len(records)} video records for channel '{channel_name}'")
+    return records
+
+
+def get_missing_transcripts(
+    channel_name: str, catalog: List[VideoMeta]
+) -> List[VideoMeta]:
+    """Find videos that need transcript processing.
+
+    Compares the catalog against existing video records to find videos
+    that either don't have records or have error status that should be retried.
+
+    Args:
+        channel_name (str): Name of the channel.
+        catalog (List[VideoMeta]): Current video catalog.
+
+    Returns:
+        List[VideoMeta]: Videos that need transcript processing.
+
+    """
+    existing_records = {r.meta.video_id: r for r in load_channel_records(channel_name)}
+
+    missing = []
+    for video_meta in catalog:
+        existing_record = existing_records.get(video_meta.video_id)
+
+        if not existing_record:
+            # No record exists
+            missing.append(video_meta)
+        elif existing_record.status == RecordStatus.error:
+            # Retry error cases
+            missing.append(video_meta)
+        # Skip ok, transcripts_disabled, not_found - these are final states
+
+    logger.info(
+        f"Found {len(missing)} videos needing transcript processing out of {len(catalog)} total"
+    )
+    return missing

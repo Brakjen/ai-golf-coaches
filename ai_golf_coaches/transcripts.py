@@ -318,7 +318,7 @@ class TranscriptFetcher:
 
 
 def fetch_transcripts_for_channel(
-    channel_name: str, catalog: List[VideoMeta]
+    channel_name: Optional[str], catalog: List[VideoMeta]
 ) -> List[VideoRecord]:
     """Fetch transcripts for all videos from a channel.
 
@@ -326,13 +326,18 @@ def fetch_transcripts_for_channel(
     all videos for a given channel with appropriate rate limiting.
 
     Args:
-        channel_name (str): Name of the channel for logging purposes.
+        channel_name (Optional[str]): Name of the channel for logging purposes.
         catalog (List[VideoMeta]): List of video metadata to process.
 
     Returns:
         List[VideoRecord]: List of video records with transcript data.
 
     """
+    if channel_name is None:
+        raise ValueError(
+            "channel_name must be provided to fetch transcripts for a channel."
+        )
+
     logger.info(
         f"Fetching transcripts for channel '{channel_name}': {len(catalog)} videos"
     )
