@@ -377,20 +377,23 @@ def _dump_model(m: BaseModel) -> dict:
     return json.loads(m.json())  # uses pydantic encoders
 
 
-def save_catalog(channel_handle: str, catalog: List[VideoMeta]) -> Path:
+def save_catalog(channel_handle: Optional[str], catalog: List[VideoMeta]) -> Path:
     """Save video catalog to local storage.
 
     Serializes video metadata to JSON and saves to the channel's
     data directory.
 
     Args:
-        channel_handle (str): Channel name or handle (@ prefix optional).
+        channel_handle (Optional[str]): Channel name or handle (@ prefix optional).
         catalog (List[VideoMeta]): List of video metadata to save.
 
     Returns:
         Path: Path where the catalog was saved.
 
     """
+    if channel_handle is None:
+        raise ValueError("channel_handle must be provided to save catalog.")
+
     logger.info(
         f"Saving catalog for channel: {channel_handle} with {len(catalog)} videos"
     )
