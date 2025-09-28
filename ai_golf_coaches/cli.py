@@ -1,0 +1,367 @@
+import argparse
+import logging
+from pathlib import Path
+
+from ai_golf_coaches import rag, transcripts, youtube
+from ai_golf_coaches.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+def cmd_build_catalog(args) -> int:
+    """Build or update video catalog for a YouTube channel."""
+    try:
+        # Resolve channel from config if needed
+        config = get_settings()
+        channel_identifier = args.channel
+
+        if channel_identifier is None:
+            raise ValueError("Channel must be specified with --channel")
+
+        logger.info(f"Building catalog for channel: {channel_identifier}")
+
+        # Build catalog
+        catalog = youtube.build_catalog_for_channel_id(
+            channel_identifier=channel_identifier,
+            page_size=args.page_size,
+            duration_thrs_seconds=args.min_duration,
+        )
+
+        # Save to local storage
+        _, handle = youtube.resolve_channel_identifier(channel_identifier)
+        saved_path = youtube.save_catalog(handle, catalog)
+
+        logger.info(f"✅ Catalog saved: {saved_path}")
+        logger.info(f"📊 Videos in catalog: {len(catalog)}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"❌ Error building catalog: {e}")
+        return 1
+
+
+def cmd_fetch_transcripts(args) -> int:
+    """Fetch transcripts for videos in a channel."""
+    try:
+        # Resolve channel from config if needed
+        config = get_settings()
+        channel_identifier = args.channel
+
+        if channel_identifier is None:
+            raise ValueError("Channel must be specified with --channel")
+
+        # Get channel handle for file operations
+        _, handle = youtube.resolve_channel_identifier(channel_identifier)
+        channel_name = handle.lstrip("@")
+
+        logger.info(f"Fetching transcripts for channel: {handle}")
+
+        # Load catalog
+        catalog = youtube.load_catalog(channel_name)
+        if not catalog:
+            logger.error(
+                f"❌ No catalog found for {channel_name}. Run 'build-catalog' first."
+            )
+            return 1
+
+        logger.info(f"📚 Loaded catalog with {len(catalog)} videos")
+
+        # Determine which videos to process
+        if args.all:
+            videos_to_process = catalog
+            logger.info("🔄 Processing ALL videos in catalog")
+        else:
+            videos_to_process = youtube.get_missing_transcripts(channel_name, catalog)
+
+        if not videos_to_process:
+            logger.info("✅ No videos need transcript processing")
+            return 0
+
+        # Set up rate limiting config
+        rate_config = transcripts.RateLimitConfig(
+            min_delay=args.min_delay,
+            max_delay=args.max_delay,
+            max_workers=args.max_workers,
+        )
+
+        # Fetch transcripts
+        fetcher = transcripts.TranscriptFetcher(rate_config)
+        records = fetcher.fetch_transcripts_parallel(videos_to_process)
+
+        # Save results
+        saved_paths = youtube.save_video_records(channel_name, records)
+
+        # Report results
+        status_counts = {}
+        for record in records:
+            status = record.status.value
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        logger.info(f"✅ Processed {len(records)} videos")
+        for status, count in status_counts.items():
+            logger.info(f"   {status}: {count}")
+        logger.info(f"💾 Saved {len(saved_paths)} video records")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"❌ Error fetching transcripts: {e}")
+        return 1
+
+
+def cmd_status(args) -> int:
+    """Show status of catalogs and transcripts."""
+    try:
+        config = get_settings()
+
+        # Get configured channels
+        channels = []
+        if config.youtube.egs.handle:
+            channels.append(("EGS", config.youtube.egs.handle.lstrip("@")))
+        if config.youtube.milo.handle:
+            channels.append(("Milo", config.youtube.milo.handle.lstrip("@")))
+
+        if not channels:
+            logger.warning("No channels configured")
+            return 1
+
+        print("📊 AI Golf Coaches Status")
+        print("=" * 40)
+
+        for coach_name, channel_name in channels:
+            print(f"\n{coach_name} ({channel_name}):")
+
+            # Check catalog
+            catalog = youtube.load_catalog(channel_name)
+            if catalog:
+                print(f"  📚 Catalog: {len(catalog)} videos")
+
+                # Check transcripts
+                records = youtube.load_channel_records(channel_name)
+                record_map = {r.meta.video_id: r for r in records}
+
+                transcript_stats = {
+                    "ok": 0,
+                    "error": 0,
+                    "transcripts_disabled": 0,
+                    "not_found": 0,
+                    "missing": 0,
+                }
+
+                for video in catalog:
+                    record = record_map.get(video.video_id)
+                    if record:
+                        status = record.status.value
+                        transcript_stats[status] = transcript_stats.get(status, 0) + 1
+                    else:
+                        transcript_stats["missing"] += 1
+
+                print("  📝 Transcripts:")
+                for status, count in transcript_stats.items():
+                    if count > 0:
+                        print(f"    {status}: {count}")
+            else:
+                print("  📚 Catalog: Not found")
+
+        # Check index
+        index_dir = Path("data/index/youtube")
+        if index_dir.exists():
+            print(f"\n🔍 Vector Index: Available at {index_dir}")
+        else:
+            print("\n🔍 Vector Index: Not built")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"❌ Error checking status: {e}")
+        return 1
+
+
+def cmd_ask(args) -> int:
+    """Ask a question to the AI golf coaches."""
+    try:
+        # Check if index exists
+        index_dir = Path("data/index/youtube")
+        if not index_dir.exists():
+            logger.error("❌ Vector index not found. Build it first with:")
+            logger.error("   aig build-catalog --channel @elitegolfschools")
+            logger.error("   aig fetch-transcripts --channel @elitegolfschools")
+            logger.error(
+                "   python -c 'from ai_golf_coaches.rag import create_index; create_index()'"
+            )
+            return 1
+
+        index_type = "test" if args.test_index else "full"
+        logger.info(
+            f"🤔 Asking Coach {args.coach.upper() if args.coach != 'all' else 'AI Golf Coaches'} ({index_type} index): {args.question}"
+        )
+
+        # Get the answer from RAG
+        response = rag.ask(
+            args.question, coach=args.coach, use_test_index=args.test_index
+        )
+
+        # Print the response nicely formatted
+        print("\n" + "=" * 80)
+        print(
+            f"🏌️ AI Golf Coach ({args.coach.upper() if args.coach != 'all' else 'All Coaches'}) Response:"
+        )
+        print("=" * 80)
+        print(response)
+        print("=" * 80)
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"❌ Error asking question: {e}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+
+def cli() -> int:
+    """Command-line interface for AI Golf Coaches data management."""
+    parser = argparse.ArgumentParser(
+        description="AI Golf Coaches - Data management and transcript processing",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Build catalog for Elite Golf Schools
+  aig build-catalog --channel @elitegolfschools
+
+  # Fetch missing transcripts
+  aig fetch-transcripts --channel @elitegolfschools
+
+  # Check status of all channels
+  aig status
+
+  # Ask the AI golf coaches questions
+  aig ask "How do I fix my slice?"
+  aig ask "What is the transition in golf swing?" --coach egs
+  aig ask "How should I practice putting?" --coach milo
+        """,
+    )
+
+    # Global options
+    parser.add_argument(
+        "--verbose", "-v", action="store_true", help="Enable verbose logging"
+    )
+
+    # Create subparsers
+    subparsers = parser.add_subparsers(
+        dest="command", help="Available commands", metavar="COMMAND"
+    )
+
+    # Build catalog command
+    build_parser = subparsers.add_parser(
+        "build-catalog",
+        help="Build or update video catalog for a YouTube channel",
+        description="Fetch video metadata from YouTube and save to local catalog",
+    )
+    build_parser.add_argument(
+        "--channel",
+        "-c",
+        help="YouTube channel ID (UC...) or handle (@handle). Uses EGS if not specified.",
+    )
+    build_parser.add_argument(
+        "--page-size",
+        type=int,
+        default=50,
+        help="Number of results per API page (max 50, default: 50)",
+    )
+    build_parser.add_argument(
+        "--min-duration",
+        type=int,
+        default=360,
+        help="Minimum video duration in seconds to exclude Shorts (default: 360)",
+    )
+    build_parser.set_defaults(func=cmd_build_catalog)
+
+    # Fetch transcripts command
+    fetch_parser = subparsers.add_parser(
+        "fetch-transcripts",
+        help="Fetch transcripts for videos in a channel",
+        description="Download transcripts for videos with rate limiting and proxy support",
+    )
+    fetch_parser.add_argument(
+        "--channel",
+        "-c",
+        help="YouTube channel ID (UC...) or handle (@handle). Uses EGS if not specified.",
+    )
+    fetch_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Fetch transcripts for ALL videos, not just missing ones",
+    )
+    fetch_parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=3,
+        help="Maximum number of concurrent workers (default: 3)",
+    )
+    fetch_parser.add_argument(
+        "--min-delay",
+        type=float,
+        default=4.0,
+        help="Minimum delay between requests in seconds (default: 4.0)",
+    )
+    fetch_parser.add_argument(
+        "--max-delay",
+        type=float,
+        default=15.0,
+        help="Maximum delay between requests in seconds (default: 15.0)",
+    )
+    fetch_parser.set_defaults(func=cmd_fetch_transcripts)
+
+    # Status command
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show status of catalogs and transcripts",
+        description="Display overview of available data for all configured channels",
+    )
+    status_parser.set_defaults(func=cmd_status)
+
+    # Ask command
+    ask_parser = subparsers.add_parser(
+        "ask",
+        help="Ask a question to the AI golf coaches",
+        description="Query the RAG system with golf instruction questions",
+    )
+    ask_parser.add_argument("question", help="Your golf instruction question")
+    ask_parser.add_argument(
+        "--coach",
+        "-c",
+        choices=["egs", "milo", "all"],
+        default="all",
+        help="Which coach to ask: egs (Elite Golf Schools), milo (Milo Lines Golf), or all (default: all)",
+    )
+    ask_parser.add_argument(
+        "--test-index",
+        "-t",
+        action="store_true",
+        help="Use the focused test index instead of full index (faster, limited content)",
+    )
+    ask_parser.set_defaults(func=cmd_ask)
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Set up logging
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG, force=True)
+    else:
+        logging.basicConfig(level=logging.INFO, force=True)
+
+    # Execute command
+    if hasattr(args, "func"):
+        return args.func(args)
+    else:
+        parser.print_help()
+        return 1
+
+
+if __name__ == "__main__":
+    exit(cli())
