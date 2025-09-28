@@ -228,10 +228,13 @@ def resolve_channel_identifier(channel_identifier: str) -> tuple[str, str]:
             - handle: The human-readable handle for logging
 
     Raises:
+        ValueError: If channel_identifier is None.
         ValueError: If handle is provided but not found in configuration.
 
     """
     config = get_settings()
+    if channel_identifier is None:
+        raise ValueError("Channel identifier must be provided.")
 
     if channel_identifier.startswith("@"):
         # It's a handle - look up in config
@@ -276,7 +279,10 @@ def resolve_channel_identifier(channel_identifier: str) -> tuple[str, str]:
 
 
 def build_catalog_for_channel_id(
-    channel_identifier: str, page_size: int = 50, *, duration_thrs_seconds: int = 360
+    channel_identifier: Optional[str],
+    page_size: int = 50,
+    *,
+    duration_thrs_seconds: int = 360,
 ) -> List[VideoMeta]:
     """Build a video catalog for a YouTube channel.
 
