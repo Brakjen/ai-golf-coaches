@@ -13,7 +13,9 @@ from llama_index.core import (
     load_index_from_storage,
 )
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.llms.ollama import Ollama
+from llama_index.llms.openai import OpenAI
+
+from ai_golf_coaches.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,25 +25,49 @@ WINDOW_OVERLAP_SEC = 20
 PERSIST_DIR = Path("data/index/youtube")
 
 
-def setup_models(llm_model: str = "llama3.2:1b") -> None:
-    """Configure LlamaIndex models: LLM via Ollama, embeddings via HF.
+def setup_models(llm_model: str = "gpt-4o-mini") -> None:
+    """Configure LlamaIndex models: LLM via OpenAI, embeddings via HF.
 
     Args:
-        llm_model: Ollama LLM model name (default: "llama3.2:1b").
+        llm_model: OpenAI LLM model name (default: "gpt-4o-mini").
 
     Returns:
         None
 
     """
-    Settings.llm = Ollama(model=llm_model, request_timeout=120.0, temperature=0.2)
-    Settings.embed_model = HuggingFaceEmbedding(
-        model_name="intfloat/multilingual-e5-base", embed_batch_size=64
+    config = get_settings()
+    api_key = config.openai.api_key.get_secret_value()
+    Settings.llm = OpenAI(
+        model=llm_model,
+        temperature=0.2,
+        api_key=api_key,
+        max_tokens=config.openai.max_tokens,
     )
+    Settings.embed_model = HuggingFaceEmbedding(
+        model_name="intfloat/multilingual-e5-base", trust_remote_code=True
+    )
+
+    logger.info(f"Configured OpenAI model: {config.openai.model}")
+    logger.info("Configured embedding model: intfloat/multilingual-e5-base")
 
 
 def create_index(
     coach: str = "all", data_path: str | Path = "data/raw"
 ) -> VectorStoreIndex:
+    """Create and persist a vector index from transcript data.
+
+    This function loads transcript documents from the specified data path,
+    builds a vector index using the configured LLM and embedding models, and
+    persists the index to disk for later use.
+
+    Args:
+        coach (str): Which coach's data to index ("egs", "milo", or "all").
+        data_path (str | Path): Path to transcript data directory (default: "data/raw").
+
+    Returns:
+        VectorStoreIndex: The created vector index.
+
+    """
     setup_models()
 
     if coach == "all":
@@ -65,7 +91,12 @@ def create_index(
 
 
 def load_index() -> VectorStoreIndex:
-    """Load a previously built index from disk."""
+    """Load a previously built index from disk.
+
+    Returns:
+        VectorStoreIndex: The loaded vector index.
+
+    """
     if not PERSIST_DIR.exists():
         raise FileNotFoundError(f"No index at {PERSIST_DIR}. Run with --build first.")
     setup_models()
@@ -199,16 +230,16 @@ Examples:
 
     if args.build:
         create_index(coach=args.coach, data_path=args.data_path)
-        print("✅ Index built and persisted.")
+        logger.info("Index built and persisted. Exiting.")
         return 0
 
     # ask flow uses the persisted index
-    print(
-        f"\n🏌️  Asking {args.coach.upper() if args.coach != 'all' else 'AI Golf Coaches'}: {args.question}"
+    logger.info(
+        f"Asking Coach {args.coach.upper() if args.coach != 'all' else 'AI Golf Coaches'}"
     )
-    print("=" * 60)
     answer = ask(args.question, coach=args.coach, data_path=args.data_path)
-    print(answer)
+    logger.info(f"Answer: {answer}")
+    return 0
 
 
 if __name__ == "__main__":

@@ -101,6 +101,26 @@ class ProxyConfig(BaseModel):
     endpoint: str = "proxy.webshare.io"
 
 
+class OpenAIConfig(BaseModel):
+    """Configuration for OpenAI API access.
+
+    Contains API credentials and model settings for OpenAI services
+    used in the RAG system for golf instruction.
+
+    Attributes:
+        api_key: Secret API key for OpenAI API access.
+        model: Default model to use for chat completions.
+        temperature: Sampling temperature for response generation.
+        max_tokens: Maximum tokens in response.
+
+    """
+
+    api_key: SecretStr
+    model: str = "gpt-4o-mini"
+    temperature: float = 0.1
+    max_tokens: int = 1000
+
+
 class Settings(BaseSettings):
     """Main application settings.
 
@@ -121,6 +141,10 @@ class Settings(BaseSettings):
     proxy: ProxyConfig = ProxyConfig(
         username="proxy_user",  # Will be overridden by env vars
         password=SecretStr("proxy_password"),
+    )
+
+    openai: OpenAIConfig = OpenAIConfig(
+        api_key=SecretStr("openai_api_key"),  # Will be overridden by env vars
     )
 
     model_config = SettingsConfigDict(
