@@ -213,14 +213,14 @@ def _videos_details_by_ids(yt: Any, ids: List[str]) -> Dict[str, Dict]:
     return out
 
 
-def resolve_channel_identifier(channel_identifier: str) -> tuple[str, str]:
+def resolve_channel_identifier(channel_identifier: Optional[str]) -> tuple[str, str]:
     """Resolve a channel identifier to both ID and handle for API calls and logging.
 
     Takes either a channel ID or handle and resolves it using the configuration
     to return both the ID (for API calls) and handle (for logging).
 
     Args:
-        channel_identifier (str): YouTube channel ID (UC...) or handle (@...).
+        channel_identifier (Optional[str]): YouTube channel ID (UC...) or handle (@...).
 
     Returns:
         tuple[str, str]: A tuple of (channel_id, handle) where:
