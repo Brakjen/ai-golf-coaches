@@ -559,7 +559,7 @@ def load_channel_records(channel_name: Optional[str]) -> List[VideoRecord]:
 
 
 def get_missing_transcripts(
-    channel_name: str, catalog: List[VideoMeta]
+    channel_name: Optional[str], catalog: List[VideoMeta]
 ) -> List[VideoMeta]:
     """Find videos that need transcript processing.
 
@@ -567,13 +567,15 @@ def get_missing_transcripts(
     that either don't have records or have error status that should be retried.
 
     Args:
-        channel_name (str): Name of the channel.
+        channel_name (Optional[str]): Name of the channel.
         catalog (List[VideoMeta]): Current video catalog.
 
     Returns:
         List[VideoMeta]: Videos that need transcript processing.
 
     """
+    if channel_name is None:
+        raise ValueError("channel_name must be provided to get missing transcripts.")
     existing_records = {r.meta.video_id: r for r in load_channel_records(channel_name)}
 
     missing = []
