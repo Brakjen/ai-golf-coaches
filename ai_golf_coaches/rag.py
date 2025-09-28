@@ -23,6 +23,74 @@ WINDOW_SIZE_SEC = 150
 WINDOW_OVERLAP_SEC = 20
 PERSIST_DIR = Path("data/index/youtube")
 TEST_PERSIST_DIR = Path("data/index/youtube_test")
+CACHE_DIR = Path("data/cache")
+
+
+def _ensure_cache_dir() -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+
+def extract_coach_philosophy(
+    coach_dir: str = "elitegolfschools", max_lines: int = 50
+) -> str:
+    """Try to extract a concise 'philosophy' summary from the coach transcripts.
+
+    This function scans transcript files for repeated high-level phrases and
+    returns a short paragraph summarizing the coach's teaching philosophy.
+
+    It's a heuristic extractor (not perfect) and is intended to enrich system
+    prompts so the LLM can adopt consistent voice and emphasis.
+    """
+    _ensure_cache_dir()
+    cache_file = CACHE_DIR / f"{coach_dir}_philosophy.txt"
+
+    # Return cached if present
+    if cache_file.exists():
+        try:
+            return cache_file.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    import json
+    from collections import Counter
+
+    phrases = Counter()
+    coach_path = Path("data/raw") / coach_dir
+    if not coach_path.exists():
+        return ""
+
+    json_files = list(coach_path.glob("*.json"))
+    json_files = [f for f in json_files if f.name != "_catalog.json"]
+
+    for jf in json_files:
+        try:
+            data = json.loads(jf.read_text(encoding="utf-8"))
+            transcript = data.get("transcript", {})
+            text = transcript.get("text", "")
+            # collect sentence-level phrases
+            for sent in text.split(". ")[:max_lines]:
+                key = sent.strip().lower()
+                if len(key) > 30:
+                    phrases[key] += 1
+        except Exception:
+            continue
+
+    # Take the most common long-ish phrases to build a short philosophy
+    common = [p for p, _ in phrases.most_common(10) if len(p) > 40]
+    if not common:
+        return ""
+
+    summary = " ".join(common[:3])
+    # Persist the summary for future runs
+    try:
+        cache_file.write_text(summary, encoding="utf-8")
+    except Exception:
+        pass
+
+    return summary
 
 
 def setup_models(llm_model: str = "gpt-4o-mini") -> None:
@@ -361,10 +429,17 @@ def ask(
             ]
         )
     # If coach == "all", no filters applied
+    # Attempt to load an extracted EGS philosophy to enrich the system prompt
+    egs_philosophy = ""
+    try:
+        egs_philosophy = extract_coach_philosophy("elitegolfschools")
+    except Exception:
+        egs_philosophy = ""
 
     coach_prompts = {
         "egs": (
-            "You are an Elite Golf Schools (EGS) instructor passionate about teaching the X-Factor method and biomechanically sound golf swings. "
+            (f"EGS Philosophy: {egs_philosophy}\n\n" if egs_philosophy else "")
+            + "You are an Elite Golf Schools (EGS) instructor passionate about teaching the X-Factor method and biomechanically sound golf swings. "
             "Channel the enthusiastic, detailed teaching style of EGS coaches like TJ and Riley. "
             "Use ONLY the provided transcript context, but be comprehensive and thorough in your explanations. "
             "Your response style should be:\n"
@@ -431,9 +506,10 @@ def ask(
     }
     system_prompt = coach_prompts.get(coach, coach_prompts["all"])
 
+    # Reduce number of source nodes returned to top 3 for concision
     query_engine = index.as_query_engine(
         system_prompt=system_prompt,
-        similarity_top_k=8,  # More context for richer responses
+        similarity_top_k=3,  # Return top 3 most relevant sources
         response_mode="compact",  # Better for inline citations
         filters=coach_filters,  # Apply coach-specific filtering
     )
@@ -441,6 +517,7 @@ def ask(
 
     # Extract detailed citation information from source nodes
     citations = []
+    verbatim_snippets = []
     for i, node in enumerate(response.source_nodes, 1):
         # Extract video ID from filename
         file_name = node.metadata.get("file_name", "")
@@ -459,35 +536,51 @@ def ask(
             coach_name = "Milo Lines Golf"
             coach_short = "Milo"
 
-        # Try to extract video title and timestamp from content if it contains JSON structure
-        title = "Video"
-        timestamp_seconds = None
+        # Prefer the stored metadata title; fall back to parsing node text
         content = node.text
+        title = node.metadata.get("title", "Video")
+        timestamp_seconds = None
+        try:
+            import re
 
-        if '"title":' in content:
-            try:
-                import re
+            # Extract timestamp from transcript lines - look for "start": value
+            start_match = re.search(r'"start":\s*([0-9.]+)', content)
+            if start_match:
+                timestamp_seconds = float(start_match.group(1))
 
-                # Extract title from JSON content
-                lines = content.split("\n")
-                for line in lines:
-                    if '"title":' in line:
-                        title_part = line.split('"title":')[1].strip(' ",')
-                        if title_part:
-                            title = (
-                                title_part.split('"')[1]
-                                if '"' in title_part
-                                else title_part[:50]
-                            )
-                            break
+            # If title missing or generic, try to extract 'Video Title:' from the content
+            if (not title or title == "Video") and "Video Title:" in content:
+                for line in content.splitlines():
+                    if "Video Title:" in line:
+                        title = line.split("Video Title:")[-1].strip()
+                        break
+        except Exception:
+            pass
 
-                # Extract timestamp from transcript lines - look for "start": value
-                start_match = re.search(r'"start":\s*([0-9.]+)', content)
-                if start_match:
-                    timestamp_seconds = float(start_match.group(1))
+        # Attempt to extract a short verbatim excerpt from the node text
+        snippet = ""
+        try:
+            # Prefer the part after 'Transcript Content:' if present
+            if "Transcript Content:" in content:
+                snippet = content.split("Transcript Content:")[-1].strip()
+            else:
+                snippet = content.strip()
 
-            except:
-                pass
+            # Keep a short excerpt (approx 300 chars) ending at sentence boundary
+            snippet = snippet.replace("\n", " ")
+            if len(snippet) > 300:
+                # Cut at the last period before 300 chars if possible
+                cutoff = snippet.rfind(".", 0, 300)
+                if cutoff and cutoff > 50:
+                    snippet = snippet[: cutoff + 1]
+                else:
+                    snippet = snippet[:300] + "..."
+        except Exception:
+            snippet = ""
+
+        # Save the snippet to the verbatim snippets list for inclusion later
+        if snippet:
+            verbatim_snippets.append(snippet)
 
         # Format timestamp for YouTube URL and display
         timestamp_url_param = ""
@@ -505,20 +598,37 @@ def ask(
         # Create citation with coach attribution and timestamp
         youtube_url = f"https://www.youtube.com/watch?v={video_id}{timestamp_url_param}"
 
-        # Create display with timestamp if available
-        title_display = title[:80] if title != "Video" else f"Video {video_id}"
+        # Title on its own line for clarity
+        title_display = title if title != "Video" else f"Video {video_id}"
 
-        citation = f"📹 **{coach_short}**: [{title_display}]({youtube_url})\n"
-        citation += f"   Coach: {coach_name}\n"
-        citation += f"   Video ID: {video_id}\n"
+        # Build citation with clear title line and timestamp
+        citation_lines = []
+        citation_lines.append(f"📹 {title_display}")
+        citation_lines.append(f"   Link: {youtube_url}")
+        citation_lines.append(f"   Coach: {coach_name}")
+        citation_lines.append(f"   Video ID: {video_id}")
         if timestamp_display:
-            citation += f"   Timestamp: {timestamp_display.strip()}\n"
-        citation += f"   Relevance: {score}\n"
+            citation_lines.append(f"   Timestamp: {timestamp_display.strip()}")
+        citation_lines.append(f"   Relevance: {score}")
 
-        citations.append(citation)
+        citations.append("\n".join(citation_lines))
+
+    # Add verbatim snippets (short excerpts from top source nodes) to increase
+    # the 'verbatim' feel of the answer and provide direct context.
+    full_response = str(response)
+    if verbatim_snippets:
+        full_response += (
+            "\n\n"
+            + "=" * 60
+            + "\n📝 Verbatim excerpts from top sources:\n"
+            + "=" * 60
+            + "\n\n"
+        )
+        # Include numbered snippets
+        for idx, s in enumerate(verbatim_snippets, 1):
+            full_response += f"({idx}) {s}\n\n"
 
     # Add detailed citation information at the end
-    full_response = str(response)
     if citations:
         full_response += (
             "\n\n"
