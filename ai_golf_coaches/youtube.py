@@ -255,14 +255,14 @@ def resolve_channel_identifier(channel_identifier: str) -> tuple[str, str]:
 
         # Get the actual channel ID for API calls
         if channel_ref.is_id():
-            channel_id = channel_ref.channel_id
+            channel_id = channel_ref.channel_id or ""
         else:
             # If no ID is stored, we need to resolve the handle via API
             channel_id = (
                 channel_identifier  # Will be handled by get_uploads_playlist_id
-            )
+            ) or ""
 
-        return channel_id, handle
+        return channel_id, handle or ""
 
     else:
         # It's a channel ID - find corresponding handle for logging
