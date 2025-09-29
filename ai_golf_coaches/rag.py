@@ -531,10 +531,8 @@ def ask(
         coach_short = "unknown"
         if "elitegolfschools" in file_path:
             coach_name = "Elite Golf Schools (EGS)"
-            coach_short = "EGS"
         elif "milolinesgolf" in file_path:
             coach_name = "Milo Lines Golf"
-            coach_short = "Milo"
 
         # Prefer the stored metadata title; fall back to parsing node text
         content = node.text
