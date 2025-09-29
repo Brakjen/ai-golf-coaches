@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+
+# Optimize for multi-core performance (16 cores available)
+os.environ.setdefault("OMP_NUM_THREADS", "16")
+os.environ.setdefault("MKL_NUM_THREADS", "16")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict, List
 
 from llama_index.core import (
     Settings,
@@ -15,6 +24,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.openai import OpenAI
 
 from ai_golf_coaches.config import get_settings
+from ai_golf_coaches.personalities import get_coach_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +36,44 @@ TEST_PERSIST_DIR = Path("data/index/youtube_test")
 CACHE_DIR = Path("data/cache")
 
 
+@dataclass
+class TimedWindow:
+    """Represents a semantic window with precise timing from transcript segments.
+
+    A TimedWindow combines multiple transcript lines into a semantically coherent
+    segment with exact start and end times for precise video deep-linking.
+
+    Attributes:
+        start_time: Start time in seconds from video beginning
+        end_time: End time in seconds from video beginning
+        text: Combined text content from all lines in this window
+        line_count: Number of transcript lines included in this window
+        video_id: YouTube video identifier
+        title: Video title for reference
+
+    Notes:
+        - Designed for 45-75 second semantic segments
+        - Enables precise timestamp citations in responses
+        - Maintains natural speech boundaries when possible
+
+    """
+
+    start_time: float
+    end_time: float
+    text: str
+    line_count: int
+    video_id: str
+    title: str
+
+
 def _ensure_cache_dir() -> None:
-    try:
+    """Ensure cache directory exists.
+
+    Creates the cache directory if it doesn't exist, ignoring any errors.
+    Used for caching philosophy summaries and other temporary data.
+    """
+    with contextlib.suppress(Exception):
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
 
 
 def extract_coach_philosophy(
@@ -85,12 +128,100 @@ def extract_coach_philosophy(
 
     summary = " ".join(common[:3])
     # Persist the summary for future runs
-    try:
+    with contextlib.suppress(Exception):
         cache_file.write_text(summary, encoding="utf-8")
-    except Exception:
-        pass
 
     return summary
+
+
+def build_semantic_windows(
+    lines: List[Dict[str, Any]],
+    video_id: str,
+    title: str,
+    target_duration: float = 45.0,
+    max_duration: float = 75.0,
+) -> List[TimedWindow]:
+    """Build semantic windows from transcript lines with precise timing.
+
+    Args:
+        lines: List of transcript line dicts with 'start', 'duration', 'text'
+        video_id: Video identifier
+        title: Video title
+        target_duration: Target window duration in seconds
+        max_duration: Maximum window duration before forced split
+
+    Returns:
+        List of TimedWindow objects with precise timing
+
+    """
+    if not lines:
+        return []
+
+    windows = []
+    current_lines = []
+
+    for line in lines:
+        # Skip music/noise markers
+        text = line.get("text", "").strip()
+        if not text or text in ["[Music]", "[Applause]", "♪", "♫"]:
+            continue
+
+        current_lines.append(line)
+
+        # Calculate current window duration
+        if len(current_lines) > 1:
+            window_start = current_lines[0]["start"]
+            window_end = line["start"] + line.get("duration", 0)
+            duration = window_end - window_start
+
+            # Split if we've reached target duration or exceeded max
+            if duration >= target_duration:
+                # Build window from current lines
+                start_time = current_lines[0]["start"]
+                end_time = current_lines[-1]["start"] + current_lines[-1].get(
+                    "duration", 0
+                )
+                combined_text = " ".join(
+                    line["text"].strip()
+                    for line in current_lines
+                    if line["text"].strip()
+                )
+
+                if combined_text:  # Only add non-empty windows
+                    windows.append(
+                        TimedWindow(
+                            start_time=start_time,
+                            end_time=end_time,
+                            text=combined_text,
+                            line_count=len(current_lines),
+                            video_id=video_id,
+                            title=title,
+                        )
+                    )
+
+                current_lines = []
+
+    # Handle remaining lines
+    if current_lines:
+        start_time = current_lines[0]["start"]
+        end_time = current_lines[-1]["start"] + current_lines[-1].get("duration", 0)
+        combined_text = " ".join(
+            line["text"].strip() for line in current_lines if line["text"].strip()
+        )
+
+        if combined_text:
+            windows.append(
+                TimedWindow(
+                    start_time=start_time,
+                    end_time=end_time,
+                    text=combined_text,
+                    line_count=len(current_lines),
+                    video_id=video_id,
+                    title=title,
+                )
+            )
+
+    return windows
 
 
 def setup_models(llm_model: str = "gpt-4o-mini") -> None:
@@ -107,12 +238,15 @@ def setup_models(llm_model: str = "gpt-4o-mini") -> None:
     api_key = config.openai.api_key.get_secret_value()
     Settings.llm = OpenAI(
         model=llm_model,
-        temperature=0.2,
+        temperature=0.3,  # Slightly higher for more elaboration
         api_key=api_key,
-        max_tokens=config.openai.max_tokens,
+        max_tokens=2500,  # Much higher limit for detailed responses
     )
     Settings.embed_model = HuggingFaceEmbedding(
-        model_name="intfloat/multilingual-e5-base", trust_remote_code=True
+        model_name="intfloat/multilingual-e5-base",
+        trust_remote_code=True,
+        embed_batch_size=64,  # Increased for 16 cores
+        max_length=512,  # Optimize token length
     )
 
     logger.info(f"Configured OpenAI model: {config.openai.model}")
@@ -170,38 +304,51 @@ def create_index(
             title = meta.get("title", "Unknown Title")
             channel = meta.get("channel_title", "Unknown Channel")
 
-            # Extract transcript text
+            # Extract transcript lines for timed windows
             transcript = data.get("transcript", {})
-            transcript_text = transcript.get("text", "")
+            lines = transcript.get("lines", [])
 
-            if not transcript_text:
-                logger.warning(f"No transcript text found in {json_file.name}")
+            if not lines:
+                logger.warning(f"No transcript lines found in {json_file.name}")
                 continue
 
-            # Create enhanced document with title and context for better matching
-            enhanced_content = f"""
+            # Build semantic windows with precise timing
+            windows = build_semantic_windows(lines, video_id, title)
+
+            # Create document for each window
+            for i, window in enumerate(windows):
+                # Create enhanced document with title and context
+                enhanced_content = f"""
 Video Title: {title}
 Channel: {channel}
 Video ID: {video_id}
-Topic Focus: {title}
+Window: {i+1}/{len(windows)} ({window.start_time:.1f}s - {window.end_time:.1f}s)
 
 Transcript Content:
-{transcript_text}
-            """.strip()
+{window.text}
+                """.strip()
 
-            # Create document with enhanced metadata
-            doc = Document(
-                text=enhanced_content,
-                metadata={
-                    "video_id": video_id,
-                    "title": title,
-                    "channel": channel,
-                    "file_path": str(json_file),
-                    "file_name": json_file.name,
-                    "topic": title.lower(),  # For better topic matching
-                },
-            )
-            documents.append(doc)
+                # Create document with enhanced metadata including precise timing
+                doc = Document(
+                    text=enhanced_content,
+                    metadata={
+                        "video_id": video_id,
+                        "title": title,
+                        "channel": channel,
+                        "file_path": str(json_file),
+                        "file_name": json_file.name,
+                        "start_time": window.start_time,
+                        "end_time": window.end_time,
+                        "window_index": i,
+                        "total_windows": len(windows),
+                        "line_count": window.line_count,
+                        "coach": "EGS"
+                        if "elitegolfschools" in str(json_file)
+                        else "Milo",
+                        "topic": title.lower(),  # For better topic matching
+                    },
+                )
+                documents.append(doc)
 
         except Exception as e:
             logger.error(f"Error processing {json_file}: {e}")
@@ -229,13 +376,17 @@ Transcript Content:
 def create_test_index(
     max_videos: int = 20, include_putting: bool = True
 ) -> VectorStoreIndex:
-    """Create a small test index with limited videos for quick testing.
+    """Create a smaller test index for development and debugging.
+
+    This function creates a focused index using a subset of videos,
+    making it faster to iterate during development.
 
     Args:
-        max_videos: Maximum number of videos to include (default: 20)
+        max_videos: Maximum number of videos to include in test index.
+        include_putting: Whether to include putting-related videos in test index.
 
     Returns:
-        VectorStoreIndex: The test index
+        VectorStoreIndex: The test vector index.
 
     """
     setup_models()
@@ -284,44 +435,57 @@ def create_test_index(
                 title = meta.get("title", "Unknown Title")
                 channel = meta.get("channel_title", "Unknown Channel")
 
-                # Extract transcript text
+                # Extract transcript lines for timed windows
                 transcript = data.get("transcript", {})
-                transcript_text = transcript.get("text", "")
+                lines = transcript.get("lines", [])
 
-                if not transcript_text:
+                if not lines:
                     continue
 
-                # Create enhanced document with title and context for better matching
-                enhanced_content = f"""
+                # Build semantic windows with precise timing
+                windows = build_semantic_windows(lines, video_id, title)
+
+                # Create document for each window
+                for i, window in enumerate(windows):
+                    # Create enhanced document with title and context
+                    enhanced_content = f"""
 Video Title: {title}
 Channel: {channel}
 Video ID: {video_id}
-Topic Focus: {title}
+Window: {i+1}/{len(windows)} ({window.start_time:.1f}s - {window.end_time:.1f}s)
 
 Transcript Content:
-{transcript_text}
-                """.strip()
+{window.text}
+                    """.strip()
 
-                # Create document with enhanced metadata
-                doc = Document(
-                    text=enhanced_content,
-                    metadata={
-                        "video_id": video_id,
-                        "title": title,
-                        "channel": channel,
-                        "file_path": str(json_file),
-                        "file_name": json_file.name,
-                        "topic": title.lower(),
-                        "coach": "EGS"
-                        if "elitegolfschools" in str(json_file)
-                        else "Milo",
-                    },
-                )
-                documents.append(doc)
+                    # Create document with enhanced metadata including timing
+                    doc = Document(
+                        text=enhanced_content,
+                        metadata={
+                            "video_id": video_id,
+                            "title": title,
+                            "channel": channel,
+                            "file_path": str(json_file),
+                            "file_name": json_file.name,
+                            "start_time": window.start_time,
+                            "end_time": window.end_time,
+                            "window_index": i,
+                            "total_windows": len(windows),
+                            "line_count": window.line_count,
+                            "topic": title.lower(),
+                            "coach": "EGS"
+                            if "elitegolfschools" in str(json_file)
+                            else "Milo",
+                        },
+                    )
+                    documents.append(doc)
+
                 video_count += 1
 
                 # Show progress
-                print(f"Added: {title[:60]}... ({coach_dir})")
+                logger.info(
+                    f"Added: {title[:60]}... ({coach_dir}) - {len(windows)} windows"
+                )
 
             except Exception as e:
                 logger.error(f"Error processing {json_file}: {e}")
@@ -429,200 +593,126 @@ def ask(
             ]
         )
     # If coach == "all", no filters applied
-    # Attempt to load an extracted EGS philosophy to enrich the system prompt
-    egs_philosophy = ""
-    try:
-        egs_philosophy = extract_coach_philosophy("elitegolfschools")
-    except Exception:
-        egs_philosophy = ""
+    # Note: Philosophy now handled in personalities.py
 
-    coach_prompts = {
-        "egs": (
-            (f"EGS Philosophy: {egs_philosophy}\n\n" if egs_philosophy else "")
-            + "You are an Elite Golf Schools (EGS) instructor passionate about teaching the X-Factor method and biomechanically sound golf swings. "
-            "Channel the enthusiastic, detailed teaching style of EGS coaches like TJ and Riley. "
-            "Use ONLY the provided transcript context, but be comprehensive and thorough in your explanations. "
-            "Your response style should be:\n"
-            "- Detailed and educational, explaining the 'why' behind movements\n"
-            "- Enthusiastic about proper biomechanics and body movement\n"
-            "- Reference specific body parts, angles, and technical concepts from X-Factor method\n"
-            "- Give step-by-step explanations and drills when appropriate\n"
-            "- Use encouraging language like 'That's exactly right!' or 'Here's what we want to see'\n"
-            "- Explain how movements connect to power, consistency, and injury prevention\n"
-            "- Provide multiple examples or variations when the context allows\n"
-            "CRITICAL: Include inline citations throughout your response. "
-            "Format inline citations as: [EGS Video: VIDEO_ID] or [EGS Video: VIDEO_ID at MM:SS] "
-            "Example: 'The X-Factor method emphasizes proper hip rotation [EGS Video: ABC123] to generate power...' "
-            "Cite EVERY major point or technique you mention with the specific video source. "
-            "If you don't know something from the context, say what you do know and suggest watching the referenced videos for full details. "
-            "Be encouraging and educational like a golf coach."
-        ),
-        "milo": (
-            "You are Milo Lines, the golf instructor known for your clear, practical teaching approach and excellent communication skills. "
-            "Channel Milo's distinctive coaching personality and teaching methodology. "
-            "Use ONLY the provided transcript context, but give detailed, practical explanations in Milo's style. "
-            "Your response style should be:\n"
-            "- Clear, practical explanations that golfers can immediately apply\n"
-            "- Break down complex concepts into simple, understandable steps\n"
-            "- Use Milo's characteristic phrases and teaching approach\n"
-            "- Focus on feels, images, and practical drills that work on the course\n"
-            "- Explain both what to do AND what NOT to do\n"
-            "- Give multiple options or progressions when the context supports it\n"
-            "- Use encouraging, conversational tone like you're coaching face-to-face\n"
-            "- Connect technical concepts to real-world application and course management\n"
-            "CRITICAL: Include inline citations throughout your response. "
-            "Format inline citations as: [Milo Video: VIDEO_ID] or [Milo Video: VIDEO_ID at MM:SS] "
-            "Example: 'For better chipping, focus on body rotation [Milo Video: XYZ789] rather than just using your hands...' "
-            "Cite EVERY major point or technique you mention with the specific video source. "
-            "If the transcript context doesn't provide a complete answer, explain what you can and encourage watching the full videos for comprehensive instruction. "
-            "Be thorough and helpful - give golfers the detailed guidance they're seeking."
-        ),
-        "all": (
-            "You are an AI golf coach with access to instruction from multiple expert instructors including Elite Golf Schools and Milo Lines Golf. "
-            "Use the provided transcript context to give comprehensive, detailed answers that capture each coach's unique teaching style. "
-            "When referencing different instructors, maintain their distinct voices and approaches. "
-            "CRITICAL INSTRUCTION ATTRIBUTION RULES:\n"
-            "- ALWAYS identify which coach is providing each piece of advice\n"
-            "- Use phrases like: 'Elite Golf Schools teaches...', 'Milo Lines explains...', 'According to EGS...', 'Milo's approach is...'\n"
-            "- When you have advice from multiple coaches, organize by coach or clearly separate their approaches\n"
-            "- If transcript content mentions 'elitegolfschools' path, attribute to Elite Golf Schools/EGS\n"
-            "- If transcript content mentions 'milolinesgolf' path, attribute to Milo Lines Golf\n"
-            "- Never present advice without coach attribution - golfers want to know the source\n"
-            "Your response should be:\n"
-            "- Comprehensive and educational, drawing from all relevant context\n"
-            "- Clearly structured by coach when multiple sources are used\n"
-            "- Compare different perspectives or methods when multiple coaches address the same topic\n"
-            "- Provide step-by-step explanations, drills, and practical application with coach attribution\n"
-            "- Explain the biomechanics and reasoning behind recommendations\n"
-            "- Give golfers multiple options or progressions to try, attributing each to its coach\n"
-            "- Use encouraging, professional coaching language\n"
-            "CRITICAL: Include inline citations throughout your response for EVERY major point. "
-            "Format inline citations as: [EGS Video: VIDEO_ID], [Milo Video: VIDEO_ID], or [EGS Video: VIDEO_ID at MM:SS] "
-            "Example: 'Elite Golf Schools teaches proper hip turn [EGS Video: ABC123], while Milo focuses on feel-based rotation [Milo Video: XYZ789].' "
-            "Attribute each piece of advice immediately when you mention it - don't save citations for the end. "
-            "If you need more context for a complete answer, explain what you do know and guide them to the most relevant videos. "
-            "Be thorough - golfers want comprehensive instruction with clear source attribution and precise timestamps, not surface-level tips."
-        ),
-    }
-    system_prompt = coach_prompts.get(coach, coach_prompts["all"])
+    # Get clean, personality-driven prompt (philosophy built into personalities.py)
+    system_prompt = get_coach_prompt(coach)
 
-    # Reduce number of source nodes returned to top 3 for concision
+    # Pull much wider set for deeper conceptual understanding
     query_engine = index.as_query_engine(
         system_prompt=system_prompt,
-        similarity_top_k=3,  # Return top 3 most relevant sources
-        response_mode="compact",  # Better for inline citations
+        similarity_top_k=35,  # Much more context for conceptual connections
+        response_mode="tree_summarize",  # Better for synthesizing multiple sources
         filters=coach_filters,  # Apply coach-specific filtering
     )
     response = query_engine.query(question)
 
-    # Extract detailed citation information from source nodes
+    # Deduplicate by video_id, keeping highest score per video
+    by_video: Dict[str, Dict[str, Any]] = {}
+    for node in response.source_nodes:
+        video_id = node.metadata.get("video_id", "unknown")
+        score = node.score or 0.0
+
+        # Keep best scoring node per video
+        if video_id not in by_video or score > by_video[video_id]["score"]:
+            by_video[video_id] = {
+                "node": node,
+                "score": score,
+            }
+
+    # Filter by relevance threshold and select top 3 videos by score
+    # Only include results with high confidence (>0.85 for very relevant, >0.80 for relevant)
+    relevant_videos = [v for v in by_video.values() if v["score"] >= 0.85]
+    if len(relevant_videos) < 2:  # If too few high-confidence, lower threshold slightly
+        relevant_videos = [v for v in by_video.values() if v["score"] >= 0.82]
+
+    top_videos = sorted(relevant_videos, key=lambda d: d["score"], reverse=True)[:3]
+
+    # Build citations and verbatim snippets from deduplicated videos
     citations = []
     verbatim_snippets = []
-    for i, node in enumerate(response.source_nodes, 1):
-        # Extract video ID from filename
-        file_name = node.metadata.get("file_name", "")
-        video_id = (
-            file_name.replace(".json", "") if file_name.endswith(".json") else "Unknown"
-        )
 
-        # Identify coach from file path
-        file_path = node.metadata.get("file_path", "")
-        coach_name = "Unknown Coach"
-        coach_short = "unknown"
-        if "elitegolfschools" in file_path:
+    for entry in top_videos:
+        node = entry["node"]
+
+        # Extract metadata (now reliable with timed windows)
+        video_id = node.metadata.get("video_id", "unknown")
+        title = node.metadata.get("title", f"Video {video_id}")
+        start_time = node.metadata.get("start_time")
+        end_time = node.metadata.get("end_time")
+        coach = node.metadata.get("coach", "Unknown")
+
+        # Map coach to full name
+        if coach == "EGS":
             coach_name = "Elite Golf Schools (EGS)"
-        elif "milolinesgolf" in file_path:
+        elif coach == "Milo":
             coach_name = "Milo Lines Golf"
+        else:
+            coach_name = "Unknown Coach"
 
-        # Prefer the stored metadata title; fall back to parsing node text
+        # Extract verbatim snippet from transcript content
         content = node.text
-        title = node.metadata.get("title", "Video")
-        timestamp_seconds = None
-        try:
-            import re
-
-            # Extract timestamp from transcript lines - look for "start": value
-            start_match = re.search(r'"start":\s*([0-9.]+)', content)
-            if start_match:
-                timestamp_seconds = float(start_match.group(1))
-
-            # If title missing or generic, try to extract 'Video Title:' from the content
-            if (not title or title == "Video") and "Video Title:" in content:
-                for line in content.splitlines():
-                    if "Video Title:" in line:
-                        title = line.split("Video Title:")[-1].strip()
-                        break
-        except Exception:
-            pass
-
-        # Attempt to extract a short verbatim excerpt from the node text
         snippet = ""
         try:
-            # Prefer the part after 'Transcript Content:' if present
             if "Transcript Content:" in content:
                 snippet = content.split("Transcript Content:")[-1].strip()
             else:
                 snippet = content.strip()
 
-            # Keep a short excerpt (approx 300 chars) ending at sentence boundary
+            # Clean and truncate snippet
             snippet = snippet.replace("\n", " ")
-            if len(snippet) > 300:
-                # Cut at the last period before 300 chars if possible
-                cutoff = snippet.rfind(".", 0, 300)
-                if cutoff and cutoff > 50:
+            if len(snippet) > 350:
+                cutoff = snippet.rfind(".", 0, 350)
+                if cutoff and cutoff > 100:
                     snippet = snippet[: cutoff + 1]
                 else:
-                    snippet = snippet[:300] + "..."
+                    snippet = snippet[:350] + "..."
         except Exception:
             snippet = ""
 
-        # Save the snippet to the verbatim snippets list for inclusion later
         if snippet:
             verbatim_snippets.append(snippet)
 
-        # Format timestamp for YouTube URL and display
+        # Build timestamp URL and display using reliable metadata
         timestamp_url_param = ""
         timestamp_display = ""
-        if timestamp_seconds is not None:
-            # Convert seconds to YouTube URL format (&t=XXXs) and display format (MM:SS)
-            timestamp_url_param = f"&t={int(timestamp_seconds)}s"
-            minutes = int(timestamp_seconds // 60)
-            seconds = int(timestamp_seconds % 60)
+        if start_time is not None:
+            timestamp_url_param = f"&t={int(start_time)}s"
+            minutes = int(start_time // 60)
+            seconds = int(start_time % 60)
             timestamp_display = f" at {minutes}:{seconds:02d}"
+            if end_time is not None:
+                end_minutes = int(end_time // 60)
+                end_seconds = int(end_time % 60)
+                timestamp_display += f"-{end_minutes}:{end_seconds:02d}"
 
-        # Get relevance score
-        score = f"{node.score:.3f}"
-
-        # Create citation with coach attribution and timestamp
+        # Build citation with precise timing
         youtube_url = f"https://www.youtube.com/watch?v={video_id}{timestamp_url_param}"
+        score = f"{entry['score']:.3f}"
 
-        # Title on its own line for clarity
-        title_display = title if title != "Video" else f"Video {video_id}"
-
-        # Build citation with clear title line and timestamp
-        citation_lines = []
-        citation_lines.append(f"📹 {title_display}")
-        citation_lines.append(f"   Link: {youtube_url}")
-        citation_lines.append(f"   Coach: {coach_name}")
-        citation_lines.append(f"   Video ID: {video_id}")
+        citation_lines = [
+            f"📹 {title}",
+            f"   Link: {youtube_url}",
+            f"   Coach: {coach_name}",
+            f"   Video ID: {video_id}",
+        ]
         if timestamp_display:
             citation_lines.append(f"   Timestamp: {timestamp_display.strip()}")
         citation_lines.append(f"   Relevance: {score}")
 
         citations.append("\n".join(citation_lines))
 
-    # Add verbatim snippets (short excerpts from top source nodes) to increase
-    # the 'verbatim' feel of the answer and provide direct context.
+    # Add verbatim snippets (short excerpts from top 3 distinct videos)
     full_response = str(response)
     if verbatim_snippets:
         full_response += (
             "\n\n"
             + "=" * 60
-            + "\n📝 Verbatim excerpts from top sources:\n"
+            + "\n📝 Verbatim excerpts (top 3 distinct videos):\n"
             + "=" * 60
             + "\n\n"
         )
-        # Include numbered snippets
+        # Include numbered snippets from distinct videos
         for idx, s in enumerate(verbatim_snippets, 1):
             full_response += f"({idx}) {s}\n\n"
 
@@ -643,21 +733,49 @@ def ask(
 
 # Convenience functions for each coach
 def egs_coach(question: str) -> str:
-    """Ask Elite Golf Schools (X-Factor method) a question."""
+    """Ask a question to the Elite Golf Schools (EGS) coach.
+
+    Args:
+        question: Golf instruction question
+
+    Returns:
+        str: EGS coach response with technical biomechanics focus
+
+    Note:
+        Convenience function that calls ask() with coach='egs'
+
+    """
     return ask(question, coach="egs")
 
 
 def milo_coach(question: str) -> str:
-    """Ask Milo Lines Golf a question."""
+    """Ask a question to the Milo Lines Golf coach.
+
+    Args:
+        question: Golf instruction question
+
+    Returns:
+        str: Milo coach response with practical, feel-based focus
+
+    Note:
+        Convenience function that calls ask() with coach='milo'
+
+    """
     return ask(question, coach="milo")
 
 
 def golf_coach(question: str, coach: str = "all") -> str:
-    """Ask your AI golf coach a question.
+    """General golf coach function supporting multiple coaches.
 
     Args:
-        question: Golf instruction question.
-        coach: Which coach to ask ("egs", "milo", or "all").
+        question: Golf instruction question
+        coach: Which coach to ask ('egs', 'milo', or 'all')
+
+    Returns:
+        str: Coach response with appropriate personality and expertise
+
+    Note:
+        General-purpose function that delegates to ask() with coach selection
 
     """
     return ask(question, coach)

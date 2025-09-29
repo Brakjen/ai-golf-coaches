@@ -118,7 +118,7 @@ class OpenAIConfig(BaseModel):
     api_key: SecretStr
     model: str = "gpt-4o-mini"
     temperature: float = 0.1
-    max_tokens: int = 1000
+    max_tokens: int = 2500
 
 
 class Settings(BaseSettings):

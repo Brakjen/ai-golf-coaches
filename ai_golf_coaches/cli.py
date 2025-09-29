@@ -1,3 +1,21 @@
+"""Command-line interface for AI Golf Coaches application.
+
+This module provides the main CLI for managing golf instruction data,
+building vector indices, and querying the RAG system. It supports
+building catalogs, fetching transcripts, creating indices, and asking
+questions to golf coaches.
+
+Commands:
+    build-catalog: Build video catalog from YouTube channels
+    fetch-transcripts: Download transcripts for videos
+    build-index: Create vector embeddings for RAG system
+    status: Show current state of data and indices
+    ask: Query the golf instruction system
+
+The CLI is designed to be the primary interface for both data management
+and end-user interactions with the golf coaching system.
+"""
+
 import argparse
 import logging
 from pathlib import Path
@@ -8,11 +26,10 @@ from ai_golf_coaches.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-def cmd_build_catalog(args) -> int:
+def cmd_build_catalog(args: argparse.Namespace) -> int:
     """Build or update video catalog for a YouTube channel."""
     try:
         # Resolve channel from config if needed
-        config = get_settings()
         channel_identifier = args.channel
 
         if channel_identifier is None:
@@ -41,11 +58,10 @@ def cmd_build_catalog(args) -> int:
         return 1
 
 
-def cmd_fetch_transcripts(args) -> int:
+def cmd_fetch_transcripts(args: argparse.Namespace) -> int:
     """Fetch transcripts for videos in a channel."""
     try:
         # Resolve channel from config if needed
-        config = get_settings()
         channel_identifier = args.channel
 
         if channel_identifier is None:
@@ -110,7 +126,7 @@ def cmd_fetch_transcripts(args) -> int:
         return 1
 
 
-def cmd_status(args) -> int:
+def cmd_status(args: argparse.Namespace) -> int:
     """Show status of catalogs and transcripts."""
     try:
         config = get_settings()
@@ -126,16 +142,16 @@ def cmd_status(args) -> int:
             logger.warning("No channels configured")
             return 1
 
-        print("📊 AI Golf Coaches Status")
-        print("=" * 40)
+        logger.info("📊 AI Golf Coaches Status")
+        logger.info("=" * 40)
 
         for coach_name, channel_name in channels:
-            print(f"\n{coach_name} ({channel_name}):")
+            logger.info(f"\n{coach_name} ({channel_name}):")
 
             # Check catalog
             catalog = youtube.load_catalog(channel_name)
             if catalog:
-                print(f"  📚 Catalog: {len(catalog)} videos")
+                logger.info(f"  📚 Catalog: {len(catalog)} videos")
 
                 # Check transcripts
                 records = youtube.load_channel_records(channel_name)
@@ -157,19 +173,19 @@ def cmd_status(args) -> int:
                     else:
                         transcript_stats["missing"] += 1
 
-                print("  📝 Transcripts:")
+                logger.info("  📝 Transcripts:")
                 for status, count in transcript_stats.items():
                     if count > 0:
-                        print(f"    {status}: {count}")
+                        logger.info(f"    {status}: {count}")
             else:
-                print("  📚 Catalog: Not found")
+                logger.info("  📚 Catalog: Not found")
 
         # Check index
         index_dir = Path("data/index/youtube")
         if index_dir.exists():
-            print(f"\n🔍 Vector Index: Available at {index_dir}")
+            logger.info(f"\n🔍 Vector Index: Available at {index_dir}")
         else:
-            print("\n🔍 Vector Index: Not built")
+            logger.info("\n🔍 Vector Index: Not built")
 
         return 0
 
@@ -178,7 +194,34 @@ def cmd_status(args) -> int:
         return 1
 
 
-def cmd_ask(args) -> int:
+def cmd_build_index(args: argparse.Namespace) -> int:
+    """Build or rebuild the vector index for RAG queries."""
+    try:
+        logger.info("🔨 Building vector index with timed windowing approach...")
+
+        if args.test_only:
+            from ai_golf_coaches.rag import create_test_index
+
+            create_test_index()
+            logger.info("✅ Test index built successfully")
+        else:
+            from ai_golf_coaches.rag import create_index
+
+            create_index()
+            logger.info("✅ Full index built successfully")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"❌ Error building index: {e}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
     """Ask a question to the AI golf coaches."""
     try:
         # Check if index exists
@@ -187,9 +230,7 @@ def cmd_ask(args) -> int:
             logger.error("❌ Vector index not found. Build it first with:")
             logger.error("   aig build-catalog --channel @elitegolfschools")
             logger.error("   aig fetch-transcripts --channel @elitegolfschools")
-            logger.error(
-                "   python -c 'from ai_golf_coaches.rag import create_index; create_index()'"
-            )
+            logger.error("   aig build-index")
             return 1
 
         index_type = "test" if args.test_index else "full"
@@ -202,14 +243,14 @@ def cmd_ask(args) -> int:
             args.question, coach=args.coach, use_test_index=args.test_index
         )
 
-        # Print the response nicely formatted
-        print("\n" + "=" * 80)
-        print(
+        # Print the response nicely formatted (keep prints for user output)
+        print("\n" + "=" * 80)  # noqa: T201
+        print(  # noqa: T201
             f"🏌️ AI Golf Coach ({args.coach.upper() if args.coach != 'all' else 'All Coaches'}) Response:"
         )
-        print("=" * 80)
-        print(response)
-        print("=" * 80)
+        print("=" * 80)  # noqa: T201
+        print(response)  # noqa: T201
+        print("=" * 80)  # noqa: T201
 
         return 0
 
@@ -234,6 +275,9 @@ Examples:
 
   # Fetch missing transcripts
   aig fetch-transcripts --channel @elitegolfschools
+
+  # Build vector index for RAG queries
+  aig build-index
 
   # Check status of all channels
   aig status
@@ -323,6 +367,20 @@ Examples:
         description="Display overview of available data for all configured channels",
     )
     status_parser.set_defaults(func=cmd_status)
+
+    # Build index command
+    index_parser = subparsers.add_parser(
+        "build-index",
+        help="Build or rebuild the vector index for RAG queries",
+        description="Create vector embeddings from transcripts using timed windowing approach",
+    )
+    index_parser.add_argument(
+        "--test-only",
+        "-t",
+        action="store_true",
+        help="Build only the test index (faster, limited content for development)",
+    )
+    index_parser.set_defaults(func=cmd_build_index)
 
     # Ask command
     ask_parser = subparsers.add_parser(
