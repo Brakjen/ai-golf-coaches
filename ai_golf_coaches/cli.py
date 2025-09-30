@@ -22,6 +22,7 @@ from pathlib import Path
 
 from ai_golf_coaches import rag, transcripts, youtube
 from ai_golf_coaches.config import get_settings
+from ai_golf_coaches.rag import EMBEDDING_MODELS, LLM_MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +264,56 @@ def cmd_ask(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_test_models(args: argparse.Namespace) -> int:
+    """Test different embedding and LLM models with a sample query."""
+    from ai_golf_coaches.rag import EMBEDDING_MODELS, LLM_MODELS, setup_models, ask
+    
+    test_query = args.query or "How do I fix my slice off the tee?"
+    coach = args.coach or "riley"
+    
+    logger.info(f"Testing models with query: '{test_query}'")
+    logger.info(f"Coach: {coach}")
+    
+    # Test embedding model if specified
+    if args.embedding_model:
+        if args.embedding_model in EMBEDDING_MODELS:
+            embedding_model = EMBEDDING_MODELS[args.embedding_model]
+        else:
+            embedding_model = args.embedding_model
+        logger.info(f"Testing embedding model: {embedding_model}")
+    else:
+        embedding_model = None
+    
+    # Test LLM model if specified  
+    if args.llm_model:
+        if args.llm_model in LLM_MODELS:
+            llm_model = LLM_MODELS[args.llm_model]
+        else:
+            llm_model = args.llm_model
+        logger.info(f"Testing LLM model: {llm_model}")
+    else:
+        llm_model = None
+    
+    try:
+        # Setup models and test
+        setup_models(llm_model=llm_model, embedding_model=embedding_model)
+        
+        response = ask(test_query, coach=coach)
+        print(f"\n🏌️ Response from {coach.upper()}:\n")  # noqa: T201
+        print(response)  # noqa: T201
+        print("\n" + "="*80 + "\n")  # noqa: T201
+        
+        return 0
+        
+    except Exception as e:
+        logger.error(f"❌ Error testing models: {e}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+
 def cli() -> int:
     """Command-line interface for AI Golf Coaches data management."""
     parser = argparse.ArgumentParser(
@@ -403,6 +454,39 @@ Examples:
         help="Use the focused test index instead of full index (faster, limited content)",
     )
     ask_parser.set_defaults(func=cmd_ask)
+
+    # Test models command
+    test_parser = subparsers.add_parser(
+        "test-models",
+        help="Test different embedding and LLM models",
+        description="Compare different models with a sample query to evaluate quality",
+    )
+    test_parser.add_argument(
+        "--query",
+        "-q", 
+        default="How do I fix my slice off the tee?",
+        help="Test query to use (default: 'How do I fix my slice off the tee?')",
+    )
+    test_parser.add_argument(
+        "--coach",
+        "-c",
+        choices=["egs", "milo", "riley", "all"],
+        default="riley",
+        help="Which coach to ask (default: riley)",
+    )
+    test_parser.add_argument(
+        "--embedding-model",
+        "-e",
+        choices=list(EMBEDDING_MODELS.keys()) + ["custom"],
+        help=f"Embedding model to test: {', '.join(EMBEDDING_MODELS.keys())} or custom model name",
+    )
+    test_parser.add_argument(
+        "--llm-model",
+        "-l",
+        choices=list(LLM_MODELS.keys()) + ["custom"],
+        help=f"LLM model to test: {', '.join(LLM_MODELS.keys())} or custom model name",
+    )
+    test_parser.set_defaults(func=cmd_test_models)
 
     # Parse arguments
     args = parser.parse_args()

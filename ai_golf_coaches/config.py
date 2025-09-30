@@ -112,13 +112,17 @@ class OpenAIConfig(BaseModel):
         model: Default model to use for chat completions.
         temperature: Sampling temperature for response generation.
         max_tokens: Maximum tokens in response.
+        embedding_model: Embedding model choice (huggingface or openai model name).
+        embedding_provider: Provider for embeddings (huggingface or openai).
 
     """
 
     api_key: SecretStr
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-4o"  # Upgraded from gpt-4o-mini for better quality
     temperature: float = 0.1
     max_tokens: int = 2500
+    embedding_model: str = "BAAI/bge-m3"  # State-of-the-art embedding model
+    embedding_provider: str = "huggingface"  # "huggingface" or "openai"
 
 
 class Settings(BaseSettings):
