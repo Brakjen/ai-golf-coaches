@@ -16,7 +16,7 @@ include = "ai_golf_coaches"
 aig = "ai_golf_coaches.cli:cli"
 
 [tool.poetry.dependencies]
-python = ">=3.13,<3.14"
+python = ">=3.11,<3.14"
 pre-commit = "^4.3.0"
 ruff = "^0.13.2"
 mkdocs = "^1.6.1"
@@ -35,3 +35,4 @@ llama-index-embeddings-openai = "^0.5.1"
 llama-index-embeddings-ollama = "^0.8.3"
 llama-index = "^0.14.3"
 ollama = "^0.6.0"
+python-dotenv = "^1.0.0"

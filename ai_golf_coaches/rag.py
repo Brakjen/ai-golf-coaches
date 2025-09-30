@@ -26,6 +26,22 @@ from llama_index.llms.openai import OpenAI
 from ai_golf_coaches.config import get_settings
 from ai_golf_coaches.personalities import get_coach_prompt
 
+# Recommended embedding models (as of 2025)
+EMBEDDING_MODELS = {
+    "bge_m3": "BAAI/bge-m3",  # Best overall: multilingual, multi-granularity
+    "bge_large": "BAAI/bge-large-en-v1.5",  # Best for English content
+    "e5_base": "intfloat/multilingual-e5-base",  # Current default (good baseline)
+    "openai_large": "text-embedding-3-large",  # OpenAI's latest (requires API)
+    "openai_small": "text-embedding-3-small",  # OpenAI smaller but fast
+}
+
+# Recommended LLM models
+LLM_MODELS = {
+    "gpt4o": "gpt-4o",  # Latest GPT-4 Omni (best quality)
+    "gpt4_turbo": "gpt-4-turbo",  # GPT-4 Turbo (good balance)
+    "gpt4o_mini": "gpt-4o-mini",  # Current default (fast, cheaper)
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -224,33 +240,54 @@ def build_semantic_windows(
     return windows
 
 
-def setup_models(llm_model: str = "gpt-4o-mini") -> None:
-    """Configure LlamaIndex models: LLM via OpenAI, embeddings via HF.
+def setup_models(
+    llm_model: str | None = None,
+    embedding_model: str | None = None,
+) -> None:
+    """Configure LlamaIndex with enhanced models for better RAG performance.
+
+    Sets up the global Settings object with state-of-the-art models.
+    Supports multiple embedding providers and latest LLM models.
 
     Args:
-        llm_model: OpenAI LLM model name (default: "gpt-4o-mini").
-
-    Returns:
-        None
+        llm_model: OpenAI model name to use for text generation (optional, uses config default).
+        embedding_model: Embedding model to use (optional, uses config default).
 
     """
     config = get_settings()
     api_key = config.openai.api_key.get_secret_value()
+    
+    # Use config defaults if not specified
+    llm_model = llm_model or config.openai.model
+    embedding_model = embedding_model or config.openai.embedding_model
+    
+    # Setup LLM
     Settings.llm = OpenAI(
         model=llm_model,
         temperature=0.3,  # Slightly higher for more elaboration
         api_key=api_key,
-        max_tokens=2500,  # Much higher limit for detailed responses
+        max_tokens=config.openai.max_tokens,
     )
-    Settings.embed_model = HuggingFaceEmbedding(
-        model_name="intfloat/multilingual-e5-base",
-        trust_remote_code=True,
-        embed_batch_size=64,  # Increased for 16 cores
-        max_length=512,  # Optimize token length
-    )
-
-    logger.info(f"Configured OpenAI model: {config.openai.model}")
-    logger.info("Configured embedding model: intfloat/multilingual-e5-base")
+    
+    # Setup embedding model based on provider
+    if config.openai.embedding_provider == "openai":
+        from llama_index.embeddings.openai import OpenAIEmbedding
+        Settings.embed_model = OpenAIEmbedding(
+            model=embedding_model,  # e.g., "text-embedding-3-large"
+            api_key=api_key,
+        )
+        logger.info(f"Configured OpenAI embedding model: {embedding_model}")
+    else:
+        # Default to HuggingFace with better models
+        Settings.embed_model = HuggingFaceEmbedding(
+            model_name=embedding_model,
+            trust_remote_code=True,
+            embed_batch_size=64,  # Optimized for 16 cores
+            max_length=512,
+        )
+        logger.info(f"Configured HuggingFace embedding model: {embedding_model}")
+    
+    logger.info(f"Configured LLM: {llm_model}")
 
 
 def create_index(
@@ -621,10 +658,10 @@ def ask(
             }
 
     # Filter by relevance threshold and select top 3 videos by score
-    # Only include results with high confidence (>0.85 for very relevant, >0.80 for relevant)
-    relevant_videos = [v for v in by_video.values() if v["score"] >= 0.85]
-    if len(relevant_videos) < 2:  # If too few high-confidence, lower threshold slightly
-        relevant_videos = [v for v in by_video.values() if v["score"] >= 0.82]
+    # Adjusted thresholds for BGE-M3 model (different similarity distribution than E5)
+    relevant_videos = [v for v in by_video.values() if v["score"] >= 0.75]
+    if len(relevant_videos) < 2:  # If too few high-confidence, lower threshold further
+        relevant_videos = [v for v in by_video.values() if v["score"] >= 0.65]
 
     top_videos = sorted(relevant_videos, key=lambda d: d["score"], reverse=True)[:3]
 
