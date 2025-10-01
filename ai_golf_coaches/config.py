@@ -118,11 +118,11 @@ class OpenAIConfig(BaseModel):
     """
 
     api_key: SecretStr
-    model: str = "gpt-4o"  # Upgraded from gpt-4o-mini for better quality
+    model: str = "gpt-4o-mini"  # Fast and efficient model
     temperature: float = 0.1
-    max_tokens: int = 2500
-    embedding_model: str = "BAAI/bge-m3"  # State-of-the-art embedding model
-    embedding_provider: str = "huggingface"  # "huggingface" or "openai"
+    max_tokens: int = 1500
+    embedding_model: str = "text-embedding-3-small"  # Fast OpenAI embeddings
+    embedding_provider: str = "openai"  # "huggingface" or "openai"
 
 
 class Settings(BaseSettings):

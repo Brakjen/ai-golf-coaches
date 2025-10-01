@@ -635,12 +635,13 @@ def ask(
     # Get clean, personality-driven prompt (philosophy built into personalities.py)
     system_prompt = get_coach_prompt(coach)
 
-    # Pull much wider set for deeper conceptual understanding
+    # Optimized for speed while maintaining quality
     query_engine = index.as_query_engine(
         system_prompt=system_prompt,
-        similarity_top_k=35,  # Much more context for conceptual connections
-        response_mode="tree_summarize",  # Better for synthesizing multiple sources
+        similarity_top_k=8,  # Reduced for faster processing
+        response_mode="compact",  # Faster single-pass generation
         filters=coach_filters,  # Apply coach-specific filtering
+        streaming=True,  # Enable streaming responses
     )
     response = query_engine.query(question)
 
@@ -650,7 +651,7 @@ def ask(
         video_id = node.metadata.get("video_id", "unknown")
         score = node.score or 0.0
 
-        # Keep best scoring node per video
+        # Keep best scoring node per videoe
         if video_id not in by_video or score > by_video[video_id]["score"]:
             by_video[video_id] = {
                 "node": node,
@@ -761,6 +762,163 @@ def ask(
             + "\n🎯 **Video Sources & Citations**\n"
             + "=" * 60
             + "\n\n"
+            + "\n\n".join(citations)
+        )
+        full_response += "\n\n💡 **Tip**: Click the video links above to watch the full explanations!"
+
+    return full_response
+
+
+def get_query_engine(index: VectorStoreIndex, coach: str = "all"):
+    """Create a query engine from a pre-loaded index.
+    
+    Args:
+        index: Pre-loaded VectorStoreIndex
+        coach: Which coach to ask ("egs", "milo", or "all")
+        
+    Returns:
+        Query engine ready for fast queries
+    """
+    # Create coach-specific filters
+    coach_filters = None
+    if coach == "egs":
+        from llama_index.core.vector_stores import (
+            FilterOperator,
+            MetadataFilter,
+            MetadataFilters,
+        )
+        coach_filters = MetadataFilters(
+            filters=[
+                MetadataFilter(
+                    key="file_path",
+                    value="elitegolfschools",
+                    operator=FilterOperator.TEXT_MATCH,
+                )
+            ]
+        )
+    elif coach == "milo":
+        from llama_index.core.vector_stores import (
+            FilterOperator,
+            MetadataFilter,
+            MetadataFilters,
+        )
+        coach_filters = MetadataFilters(
+            filters=[
+                MetadataFilter(
+                    key="file_path",
+                    value="milolinesgolf",
+                    operator=FilterOperator.TEXT_MATCH,
+                )
+            ]
+        )
+
+    # Get system prompt
+    system_prompt = get_coach_prompt(coach)
+
+    return index.as_query_engine(
+        system_prompt=system_prompt,
+        similarity_top_k=8,
+        response_mode="compact",
+        filters=coach_filters,
+        streaming=True,
+    )
+
+
+def ask_with_engine(question: str, query_engine, coach: str = "all") -> str:
+    """Ask a question using a pre-created query engine (for session mode).
+    
+    Args:
+        question: Golf instruction question
+        query_engine: Pre-created query engine from get_query_engine()
+        coach: Coach name for response formatting
+        
+    Returns:
+        Formatted response with citations
+    """
+    response = query_engine.query(question)
+
+    # Same response processing as ask() function
+    from typing import Any, Dict
+    by_video: Dict[str, Dict[str, Any]] = {}
+    for node in response.source_nodes:
+        video_id = node.metadata.get("video_id", "unknown")
+        score = node.score or 0.0
+
+        if video_id not in by_video or score > by_video[video_id]["score"]:
+            by_video[video_id] = {
+                "node": node,
+                "score": score,
+            }
+
+    relevant_videos = [v for v in by_video.values() if v["score"] >= 0.75]
+    if len(relevant_videos) < 2:
+        relevant_videos = [v for v in by_video.values() if v["score"] >= 0.65]
+
+    top_videos = sorted(relevant_videos, key=lambda d: d["score"], reverse=True)[:3]
+
+    citations = []
+    verbatim_snippets = []
+
+    for entry in top_videos:
+        node = entry["node"]
+        video_id = node.metadata.get("video_id", "unknown")
+        title = node.metadata.get("title", f"Video {video_id}")
+        start_time = node.metadata.get("start_time")
+        end_time = node.metadata.get("end_time")
+        coach_meta = node.metadata.get("coach", "Unknown")
+
+        if coach_meta == "EGS":
+            coach_name = "Elite Golf Schools (EGS)"
+        elif coach_meta == "Milo":
+            coach_name = "Milo Lines Golf"
+        else:
+            coach_name = "Unknown Coach"
+
+        content = node.text
+        snippet = ""
+        try:
+            if "Transcript Content:" in content:
+                snippet = content.split("Transcript Content:")[-1].strip()
+            else:
+                snippet = content.strip()
+
+            snippet = snippet.replace("\n", " ")
+            if len(snippet) > 350:
+                cutoff = snippet.rfind(".", 0, 350)
+                if cutoff and cutoff > 100:
+                    snippet = snippet[: cutoff + 1]
+                else:
+                    snippet = snippet[:350] + "..."
+        except Exception:
+            snippet = ""
+
+        if snippet:
+            verbatim_snippets.append(snippet)
+
+        timestamp_url_param = ""
+        timestamp_display = ""
+        if start_time is not None:
+            timestamp_url_param = f"&t={int(start_time)}s"
+            minutes = int(start_time // 60)
+            seconds = int(start_time % 60)
+            timestamp_display = f" at {minutes}:{seconds:02d}"
+            if end_time is not None:
+                end_minutes = int(end_time // 60)
+                end_seconds = int(end_time % 60)
+                timestamp_display += f"-{end_minutes}:{end_seconds:02d}"
+
+        youtube_url = f"https://www.youtube.com/watch?v={video_id}{timestamp_url_param}"
+        score = f"{entry['score']:.3f}"
+
+        citations.append(
+            f"📹 **[{title}]({youtube_url})**{timestamp_display} - {coach_name} (Score: {score})"
+        )
+
+    full_response = str(response)
+
+    if citations:
+        full_response += (
+            "\n\n---\n\n**Sources:**\n\n"
             + "\n\n".join(citations)
         )
         full_response += "\n\n💡 **Tip**: Click the video links above to watch the full explanations!"

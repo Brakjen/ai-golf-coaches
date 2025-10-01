@@ -264,6 +264,76 @@ def cmd_ask(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_session(args: argparse.Namespace) -> int:
+    """Start an interactive session with pre-loaded index for fast queries."""
+    try:
+        # Check if index exists
+        index_dir = Path("data/index/youtube")
+        if not index_dir.exists():
+            logger.error("❌ Vector index not found. Build it first with:")
+            logger.error("   aig build-catalog --channel @elitegolfschools")
+            logger.error("   aig fetch-transcripts --channel @elitegolfschools")
+            logger.error("   aig build-index")
+            return 1
+
+        index_type = "test" if args.test_index else "full"
+        print(f"🏌️ Starting AI Golf Coaches session ({index_type} index)...")  # noqa: T201
+        print("Loading index into memory (this takes ~2 minutes)...")  # noqa: T201
+        
+        # Pre-load the index once
+        from ai_golf_coaches.rag import load_index, get_query_engine
+        
+        index = load_index(use_test=args.test_index)
+        query_engine = get_query_engine(index, coach=args.coach)
+        
+        print("✅ Index loaded! Questions now respond in ~5 seconds.")  # noqa: T201
+        print("🎯 Enter questions or 'quit' to exit.\n")  # noqa: T201
+
+        while True:
+            try:
+                # Get question from user
+                question = input("🏌️ Your question: ").strip()
+                
+                if question.lower() in ['quit', 'exit', 'q']:
+                    print("👋 Session ended.")  # noqa: T201
+                    break
+                
+                if not question:
+                    continue
+                
+                # Get response using pre-loaded index
+                print(f"\n🤔 Asking Coach {args.coach.upper() if args.coach != 'all' else 'All Coaches'}...")  # noqa: T201
+                
+                # Use the pre-loaded query engine directly
+                response = rag.ask_with_engine(
+                    question, query_engine, coach=args.coach
+                )
+                
+                # Print response
+                print("\n" + "=" * 80)  # noqa: T201
+                print(f"🏌️ Coach Response:")  # noqa: T201
+                print("=" * 80)  # noqa: T201
+                print(response)  # noqa: T201
+                print("=" * 80 + "\n")  # noqa: T201
+                
+            except KeyboardInterrupt:
+                print("\n👋 Session ended.")  # noqa: T201
+                break
+            except Exception as e:
+                print(f"\n❌ Error: {e}\n")  # noqa: T201
+                continue
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"❌ Error starting session: {e}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+
 def cmd_test_models(args: argparse.Namespace) -> int:
     """Test different embedding and LLM models with a sample query."""
     from ai_golf_coaches.rag import EMBEDDING_MODELS, LLM_MODELS, setup_models, ask
@@ -454,6 +524,27 @@ Examples:
         help="Use the focused test index instead of full index (faster, limited content)",
     )
     ask_parser.set_defaults(func=cmd_ask)
+
+    # Session command (for fast repeated queries)
+    session_parser = subparsers.add_parser(
+        "session",
+        help="Start interactive session with pre-loaded index (fast queries)",
+        description="Load index once into memory, then answer multiple questions quickly",
+    )
+    session_parser.add_argument(
+        "--coach",
+        "-c",
+        choices=["egs", "milo", "all"],
+        default="all",
+        help="Which coach to ask: egs (Elite Golf Schools), milo (Milo Lines Golf), or all (default: all)",
+    )
+    session_parser.add_argument(
+        "--test-index",
+        "-t",
+        action="store_true",
+        help="Use the focused test index instead of full index (faster, limited content)",
+    )
+    session_parser.set_defaults(func=cmd_session)
 
     # Test models command
     test_parser = subparsers.add_parser(
