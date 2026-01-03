@@ -7,6 +7,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from pydantic import ValidationError
 
+from .constants import SHORTS_THRESHOLD_SECONDS
 from .models import CatalogVideo
 
 
@@ -180,7 +181,7 @@ def fetch_videos_details(
             duration_iso = content.get("duration") or "PT0S"
             duration_seconds = _parse_duration_iso8601(duration_iso)
 
-            is_short = duration_seconds < 180  # Heuristic: under 3 minutes
+            is_short = duration_seconds < SHORTS_THRESHOLD_SECONDS  # Heuristic
             live_broadcast_content = snippet.get("liveBroadcastContent", "none")
             is_livestream = bool(live) or live_broadcast_content in {"live", "upcoming"}
 

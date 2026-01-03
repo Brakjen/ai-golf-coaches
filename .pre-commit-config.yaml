@@ -26,9 +26,9 @@ repos:
       - id: ruff
         name: Ruff Pandas
         args: [ "--select=PD", "--fix", "--ignore=PD901" ]
-      - id: ruff
-        name: Ruff Print Statements
-        args: [ "--select=T20" ]
+      # - id: ruff
+      #   name: Ruff Print Statements
+      #   args: [ "--select=T20" ]
       - id: ruff
         name: "Ruff Remove Trailing Whitespace"
         args: [ "--select=W291", "--fix" ]

@@ -27,6 +27,11 @@ class ProxySettings(BaseModel):
     Attributes:
         http (str | None): HTTP proxy URL (e.g., http://user:pass@host:port).
         https (str | None): HTTPS proxy URL.
+        username (str | None): Proxy username for composing URLs when http/https not provided.
+        password (str | None): Proxy password for composing URLs when http/https not provided.
+        host (str | None): Proxy host (e.g., proxy.webshare.io).
+        port (int | None): Proxy port number.
+        scheme (str | None): Proxy scheme, defaults to 'http' if not set.
         max_parallel (int): Max concurrent outbound requests; keep small to avoid burning proxies.
         retry_backoff_seconds (float): Base backoff seconds for transient failures.
 
@@ -34,6 +39,11 @@ class ProxySettings(BaseModel):
 
     http: Optional[str] = None
     https: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    host: Optional[str] = None
+    port: Optional[int] = None
+    scheme: Optional[str] = None
     max_parallel: int = 2
     retry_backoff_seconds: float = 2.0
 
