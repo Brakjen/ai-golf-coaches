@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Optional
+import json
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-if TYPE_CHECKING:
-    import pathlib
+from .models import CatalogVideo
 
 
 class YouTubeSettings(BaseModel):
@@ -48,6 +49,21 @@ class ProxySettings(BaseModel):
     retry_backoff_seconds: float = 2.0
 
 
+class OpenAISettings(BaseModel):
+    """OpenAI-related configuration loaded from environment variables.
+
+    Attributes:
+        api_key (str): API key for OpenAI services.
+        embedding_model (str | None): Default embedding model name.
+
+    """
+
+    api_key: str = Field(..., description="OpenAI API key")
+    embedding_model: Optional[str] = Field(
+        None, description="Default OpenAI embedding model name"
+    )
+
+
 class AppSettings(BaseSettings):
     """Top-level application settings with nested env parsing.
 
@@ -60,6 +76,7 @@ class AppSettings(BaseSettings):
     Attributes:
         youtube (YouTubeSettings): YouTube API settings.
         proxy (ProxySettings): Proxy settings.
+        openai (OpenAISettings | None): OpenAI API settings (optional, required for remote embeddings).
 
     """
 
@@ -67,13 +84,14 @@ class AppSettings(BaseSettings):
 
     youtube: YouTubeSettings
     proxy: ProxySettings = ProxySettings()
+    openai: Optional[OpenAISettings] = None
 
 
-def load_channels_config(config_path: pathlib.Path) -> Dict[str, dict]:
+def load_channels_config(config_path: Path | str) -> Dict[str, dict]:
     """Load the channels configuration YAML file.
 
     Args:
-        config_path (Path): Path to the YAML configuration containing channel entries.
+        config_path (Path | str): Path to the YAML configuration containing channel entries.
 
     Returns:
         Dict[str, dict]: Mapping of canonical channel key to its settings.
@@ -83,6 +101,7 @@ def load_channels_config(config_path: pathlib.Path) -> Dict[str, dict]:
         yaml.YAMLError: If the YAML file cannot be parsed.
 
     """
+    config_path = Path(config_path)
     if not config_path.exists():
         raise FileNotFoundError(f"Channels config not found: {config_path}")
     with config_path.open("r", encoding="utf-8") as f:
@@ -110,3 +129,59 @@ def resolve_channel_key(alias_or_key: str, channels: Dict[str, dict]) -> Optiona
         if candidate == handle or candidate in aliases:
             return key
     return None
+
+
+def load_channel_catalog(
+    alias_or_key: str,
+    root: Path | str | None = None,
+    channels: Dict[str, dict] | None = None,
+    channels_config_path: Path | str = "config/channels.yaml",
+) -> List[CatalogVideo]:
+    """Load a channel's catalog.jsonl into typed `CatalogVideo` models.
+
+    This helper accepts an alias, handle, or canonical channel key, resolves to
+    the canonical key using the channels configuration, and reads the channel's
+    `catalog.jsonl` from the workspace `data/<channel>/` directory. Each line is
+    parsed and validated against the `CatalogVideo` data contract (Pydantic v2),
+    returning a list of typed models.
+
+    Args:
+        alias_or_key (str): Alias, handle, or canonical channel key (e.g., "egs",
+            "@elitegolfschools", or "elitegolfschools").
+        root (Path | str | None): Optional workspace root. Defaults to the
+            current working directory.
+        channels (Dict[str, dict] | None): Optional pre-loaded channels config
+            mapping. If not provided, the config is loaded from `channels_config_path`.
+        channels_config_path (Path | str): YAML path used when `channels` is not
+            provided.
+
+    Returns:
+        List[CatalogVideo]: Validated catalog entries.
+
+    Raises:
+        FileNotFoundError: If the catalog file does not exist.
+        json.JSONDecodeError: If any line in the catalog is not valid JSON.
+
+    """
+    base = Path(root) if root is not None else Path.cwd()
+    if channels is None:
+        channels = load_channels_config(channels_config_path)
+    resolved = (
+        resolve_channel_key(alias_or_key, channels) or alias_or_key.strip().lower()
+    )
+
+    catalog_path = base / "data" / resolved / "catalog.jsonl"
+    if not catalog_path.exists():
+        raise FileNotFoundError(
+            f"Catalog not found for '{alias_or_key}' (resolved='{resolved}'): {catalog_path}"
+        )
+
+    items: List[CatalogVideo] = []
+    with catalog_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            items.append(CatalogVideo.model_validate(obj))
+    return items

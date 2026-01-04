@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 
 from .config import AppSettings, load_channels_config, resolve_channel_key
 from .constants import COMBINE_DEFAULT_SECONDS, FETCH_MAX_WORKERS
+from .indexing import build_faiss_index, query_index
 from .transcripts import combine_chunks, fetch_transcript_chunks, write_transcript_jsonl
 from .youtube_client import (
     fetch_channel_uploads_video_ids,
@@ -123,6 +124,7 @@ def cmd_build_catalog(channel: str) -> int:
                 "published_at": v.published_at.isoformat(),
                 "duration_seconds": v.duration_seconds,
                 "is_livestream": v.is_livestream,
+                "is_podcast": v.is_podcast,
                 "channel_id": v.channel_id,
                 "channel_title": v.channel_title,
             }
@@ -298,6 +300,70 @@ def build_parser() -> argparse.ArgumentParser:
             args.limit,
             args.combine,
             args.combine_seconds,
+        )
+    )
+
+    p_index = sub.add_parser(
+        "build-index",
+        help="Build a FAISS index for a channel using OpenAI embeddings",
+    )
+    p_index.add_argument("channel", help="Alias, handle, or canonical key")
+    p_index.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Embedding model name (default: text-embedding-3-large)",
+    )
+    p_index.add_argument(
+        "--batch-size",
+        type=int,
+        default=256,
+        help="Batch size for embedding requests",
+    )
+    p_index.set_defaults(
+        func=lambda args: (
+            (
+                lambda res: (
+                    print(f"Indexed {res[0]} chunks\nindex={res[1]}\nmeta={res[2]}"),
+                    0,
+                )[1]
+            )(build_faiss_index(args.channel, args.model, args.batch_size))
+        )
+    )
+
+    p_query = sub.add_parser(
+        "query-index",
+        help="Query a channel index with a question and return top chunks",
+    )
+    p_query.add_argument("channel", help="Alias, handle, or canonical key")
+    p_query.add_argument("question", help="Natural language query")
+    p_query.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="Number of results to return",
+    )
+    p_query.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Embedding model name (default: text-embedding-3-large)",
+    )
+    p_query.set_defaults(
+        func=lambda args: (
+            (
+                lambda res: (
+                    [
+                        (
+                            print(
+                                f"score={score:.4f} video_id={doc.video_id} start={doc.start:.2f} title={doc.title} livestream={doc.is_livestream}\ntext={doc.text}"
+                            )
+                        )
+                        for doc, score in res
+                    ],
+                    0,
+                )[1]
+            )(query_index(args.channel, args.question, args.top_k, args.model))
         )
     )
 

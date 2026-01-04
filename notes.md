@@ -1,0 +1,33 @@
+## Context videos
+- 7H_Io-ihcTA                                 Own the Impact Zone in the Golf Swing         3625
+- hQjclbX8HSg                           Stabilize the Club-Face to HIT MORE GREENS!         4457
+- 3Mhn9DPFK3M                                          Global Golf Swing Principles         5140
+- Clax19sQoBY                                                      World Class Grip         4929
+- 69F-qhOnPw8                       Load the SPIRAL LINE for a powerful Golf Swing!         3752
+- 1ZDgatxIO5c                                   Feet & Leg Action in the Golf Swing         5193
+- 8SoRSLi2qGE                                              Hub Path vs. Club Path 🧬        2832
+- Q1IJlYEGWPI                              Powerful Arm Action in the Golf Swing 💪🏼         4019
+- z-JBfmq7aMs                   Unload the SPIRAL for a Powerful Golf Swing Release         2811
+- EpCsPRrFg2I                              How to Use the Hands ✋ in the Golf Swing        3629
+- LOpmTtz5VTE                                 Sequencing the Swing Like the Pros ⛳️         3752
+- bJWrOT0SG7U                               How to use the PELVIS in the Golf Swing         2802
+- 69SCQq1t_Og    How to Move the SCAPULAS in the Golf Swing - Shallow like the Pros         3208
+- 4JlWF6uc8_k                              Spiral the RIBS to control the Clubhead!         2969
+- aK-EASxY_kM       Move Lateral BEFORE you Rotate (The secret 🔑 in the golf swing)        3496
+- AdCgluJHsns   Golf Swing release, what is it? Release matchups in the golf swing.         3329
+- LbQWUXq_vGc                                      Creating Space in the Golf Swing         4204
+- ZzkbHw4NoNE                  Golf Swing Basics - How the Golf Swing REALLY Works!         2624
+- FRyqMMpfQ0A                           Proper Golf Setup - Why Is It So Important?         2925
+- litj4sqgRD8                                 Don't Lift Your Arms In The Backswing         3811
+- 7cAa9JPT9z0                                                  Shallowing Is Stupid         3017
+- nkUhiS18VT0                                     The Main System of the Golf Swing         3838
+- db1iz6Zzn2c                                          How To Release The Golf Club         5242
+- Ad1c794atTA                                          How To Perfect Your Takeaway         4403
+- OGSJ6vtXEWg                              The 3 Dimensional View of the Golf Swing         3604
+- 07ZxDD-pXgo                                What is “Side Bend” in the Golf Swing?         1336
+- wi2KruC7WNA                            How To Manage Transition In The Golf Swing         5495
+- 0LI6j6tAfZc                                                   The Perfect Release         4320
+- R2cA2iseTEM                                 How the Spine Works in the Golf Swing         4096
+- yNFFw40YzsQ                                     What Truly Shallows the Golf Club         3419
+- r2fj-XogeMk                            How to Move Athletically in the Golf Swing         8540
+- sewCowJnyZc                                                   Swingers vs Hitters         5525

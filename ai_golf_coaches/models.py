@@ -33,6 +33,7 @@ class CatalogVideo(BaseModel):
         duration_seconds (int): Video length in seconds.
         is_short (bool): Whether the video is short-form (heuristic threshold).
         is_livestream (bool): Whether the video is/was a livestream.
+        is_podcast (bool): Whether the video is a podcast (simple title heuristic).
         channel_id (str): The YouTube channel ID this video belongs to.
         channel_title (str | None): The display title of the channel.
 
@@ -44,6 +45,7 @@ class CatalogVideo(BaseModel):
     duration_seconds: int
     is_short: bool = False
     is_livestream: bool = False
+    is_podcast: bool = False
     channel_id: str
     channel_title: Optional[str] = None
 

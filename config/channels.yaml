@@ -5,6 +5,39 @@ elitegolfschools:
     - egs
     - riley
     - elite
+  constant_context_videos:
+    - 7H_Io-ihcTA
+    - hQjclbX8HSg
+    - 3Mhn9DPFK3M
+    - Clax19sQoBY
+    - 69F-qhOnPw8
+    - 1ZDgatxIO5c
+    - 8SoRSLi2qGE
+    - Q1IJlYEGWPI
+    - z-JBfmq7aMs
+    - EpCsPRrFg2I
+    - LOpmTtz5VTE
+    - bJWrOT0SG7U
+    - 69SCQq1t_Og
+    - 4JlWF6uc8_k
+    - aK-EASxY_kM
+    - AdCgluJHsns
+    - LbQWUXq_vGc
+    - ZzkbHw4NoNE
+    - FRyqMMpfQ0A
+    - litj4sqgRD8
+    - 7cAa9JPT9z0
+    - nkUhiS18VT0
+    - db1iz6Zzn2c
+    - Ad1c794atTA
+    - OGSJ6vtXEWg
+    - 07ZxDD-pXgo
+    - wi2KruC7WNA
+    - 0LI6j6tAfZc
+    - R2cA2iseTEM
+    - yNFFw40YzsQ
+    - r2fj-XogeMk
+    - sewCowJnyZc
 
 milolinesgolf:
   handle: "@milolinesgolf"
@@ -12,3 +45,4 @@ milolinesgolf:
   aliases:
     - mlg
     - milo
+  constant_context_videos: []

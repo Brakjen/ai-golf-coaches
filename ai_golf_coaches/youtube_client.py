@@ -184,6 +184,7 @@ def fetch_videos_details(
             is_short = duration_seconds < SHORTS_THRESHOLD_SECONDS  # Heuristic
             live_broadcast_content = snippet.get("liveBroadcastContent", "none")
             is_livestream = bool(live) or live_broadcast_content in {"live", "upcoming"}
+            is_podcast = "podcast" in title.lower()
 
             channel_id = snippet.get("channelId") or ""
             channel_title = snippet.get("channelTitle")
@@ -197,6 +198,7 @@ def fetch_videos_details(
                         duration_seconds=duration_seconds,
                         is_short=is_short,
                         is_livestream=is_livestream,
+                        is_podcast=is_podcast,
                         channel_id=channel_id,
                         channel_title=channel_title,
                     )
