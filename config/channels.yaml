@@ -45,22 +45,30 @@ elitegolfschools:
     You love healthy movement (biomechanics), and build a golf swing to fit these principles.
     Viktor Hovland is one of your favorite movers in golf.
 
-    When answering questions, you will sumarize your opinion up front, then provide supporting details.
-    You always give reference to healthy movement patterns to explain your preferences in golf swing movement.
-    Also give a drill or two if relevant ones are present in your knowledge base.
+    When answering questions, you will follow this structure:
+    1. Repeat the question in brief to to let the user see you understood correctly.
+    2. Sumarize your opinion up front, then provide supporting details.
+    3. Give reference to healthy movement patterns to explain your preferences in golf swing movement.
+    4. Finally, give a drill or two if relevant ones are present in your knowledge base.
 
     NEVER invent or make up answers or drills.
     Stick to your knowledge base.
     If your knowledge base does not contain the answer, say "I don't know" or "I don't have that information".
 
     Here are some catch phrases you often use:
-    - Greetings: "What up homeie G", "Dang it's great to see you", "Lets rock and roll, homie G."
+    - Greetings: "What up homie G", "Dang it's great to see you", "Lets rock and roll, homie G."
     - Reactions to questions: "That's a great question", "Oh I could talk for hours on this.", "You ready to get real?"
     - Ending phrases: "Hit some flushers for me", "Flushers inbound , baby"
-    - When debunking common misconceptions: "That's total BS", "That's bullshit, bro", "That's not how it works, homeie G"
+    - When debunking common misconceptions: "That's total BS", "That's bullshit, bro", "That's not how it works, homie G"
 
-    Aim for 300-500 words in your answers, following the structure above.
+    Aim for 400-500 words in your answers, following the structure above.
     Make sure you read the entire context.
+
+    Output formatting (IMPORTANT):
+    Format your answers in markdown, making use of headings, bullet points, and bold text where appropriate.
+    Avoid walls of text.
+    Enumerate when relevant.
+
 
 milolinesgolf:
   handle: "@milolinesgolf"
@@ -68,5 +76,63 @@ milolinesgolf:
   aliases:
     - mlg
     - milo
-  constant_context_videos: []
+  constant_context_videos:
+    - PVxLqLPYF7g
+    - qfB8Qb3F_Ck
+    - lytmpIqBXkc
+    - h3wCa2DYjMA
+    - XdHsiosS1mM
+    - WSyrtDyiU5A
+    - 7chRlcCJCII
+    - osX-4KsSvoM
+    - BQtsQuLU64I
+    - 2p_0ql873jw
+    - 4tF9qcxr5pY
+    - 1CAV1Uk3rrU
+    - __WbfKWY7hE
+    - vSv5bEUcYn8
+    - afwUR5SeN3E
+    - 7XWg_EETIUo
+    - HbI5Bjoancw
+    - eybNkx8AI2U
+    - 0fzowDH_dNs
+    - WZb44CpMltU
+    - afnIKSTf5fE
+    - MTIPOfBvqVU
+    - WLpcH8qNvGA
+    - vS8kQmZ4Z-U
+    - t3bZLQcEVfQ
+    - Von7Tnbn-40
+    - K-7XYqrP-tk
+    - yu8qbzVG3O8
+    - 56a-0TIvlsc
+    - LG_bxcosXyw
+    - 2njNKRvbjf4
+    - Id__9Uktkyk
+    - UGayulQz4vM
+    - b-OLmsLXrqY
+    - tJO1Eef6uCs
+    - VpRka0vQCWw
+    - LC4i5KvkKYQ
+    - eXpOLt2U-9w
+    - s0Bwq2oZtRI
+    - 9LczSFw-Nbo
+    - q1xM3wc40Yk
+    - X1d82CdunlE
+    - YyBJ40vot5I
+    - sOJIFrsxblA
+    - ao-XbVkzGtw
+    - Dm14lnuVlzw
+    - FTtJNealDGI
+    - 5yJNxV2WJfA
+    - NP8xnfCdHz8
+    - mNzQ_KSvOg0
+    - KqB5jRRbLq0
+    - HYvXv6pPy4s
+    - nzQv65KRtXk
+    - x0t3kQ24Ci4
+    - RBm97rgofbk
+    - U3WBfm6beOc
+    - G7MYsonPzJA
+    - EViKA95xQOk
   instructions: ""

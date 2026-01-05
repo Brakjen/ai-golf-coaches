@@ -172,6 +172,7 @@ def fetch_videos_details(
             live = item.get("liveStreamingDetails", {})
 
             title = snippet.get("title") or ""
+            description = snippet.get("description") or ""
             published_at_raw = snippet.get("publishedAt")
             published_at = (
                 datetime.fromisoformat(published_at_raw.replace("Z", "+00:00"))
@@ -194,6 +195,7 @@ def fetch_videos_details(
                     CatalogVideo(
                         video_id=vid,
                         title=title,
+                        description=description,
                         published_at=published_at,
                         duration_seconds=duration_seconds,
                         is_short=is_short,

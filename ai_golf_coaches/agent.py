@@ -58,25 +58,53 @@ def _build_messages(instructions: str, context: str, question: str) -> Tuple[lis
         Tuple[list, int]: (messages, approximate_total_token_count)
 
     """
-    system = instructions.strip() if instructions else "You are a helpful golf coach."
+    system_base = (
+        instructions.strip() if instructions else "You are a helpful golf coach."
+    )
+    system = (
+        system_base
+        + "\n\nCRITICAL formatting rules:"
+        + "\n- Respond in GitHub-flavored Markdown only."
+        + "\n- Use headings (##, ###), bullet points, and bold where helpful."
+        + "\n- Do not output plain text or non-markdown preambles."
+    )
     user_content = (
         "Context (from channel transcripts):\n"
         + context.strip()
         + "\n\n"
         + "Question:\n"
         + question.strip()
+        + "\n\nFormat: Markdown only (use headings, bullets, bold)."
     )
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_content},
     ]
 
-    with open("context", "w") as f:
-        f.write(context)
-
     # Approximate token count by concatenating contents; used upstream for clipping
     approx_tokens = len((system + "\n" + user_content).split())
     return messages, approx_tokens
+
+
+def _ensure_markdown(text: str) -> str:
+    """Ensure the output is at least minimally formatted as Markdown.
+
+    If no common Markdown structures are detected, wrap with a heading.
+
+    Args:
+        text (str): Model output text.
+
+    Returns:
+        str: Markdown-safe output.
+
+    """
+    if not text:
+        return text
+    has_heading = any(h in text for h in ("# ", "## ", "### "))
+    has_list = any(s in text for s in ("\n- ", "\n* ", "\n1. "))
+    if has_heading or has_list:
+        return text
+    return f"## Answer\n\n{text}"
 
 
 def run_agent(channel_alias: str, question: str) -> str:
@@ -141,8 +169,76 @@ def run_agent(channel_alias: str, question: str) -> str:
         model=model,
         messages=messages,
         max_completion_tokens=max_output_tokens,
-        reasoning_effort="high",
+        reasoning_effort="medium",
     )
 
     text = resp.choices[0].message.content or ""
-    return text
+    return _ensure_markdown(text)
+
+
+def summarize_for_header(text: str, max_chars: int = 120) -> str:
+    """Summarize a response concisely for UI headers.
+
+    Aims for a short 5–7 word phrase via a fast, low-cost
+    OpenAI model. Does not hard-enforce word count; relies
+    on prompt guidance. Falls back to a local first-line
+    snippet if the API call fails.
+
+    Args:
+        text (str): Full response text (Markdown allowed).
+        max_chars (int): Target maximum characters for the summary.
+
+    Returns:
+        str: Concise summary suitable for expander titles.
+
+    """
+    src = text.strip()
+    if not src:
+        return "Response"
+
+    try:
+        from openai import OpenAI  # type: ignore
+
+        settings = AppSettings()
+        client = OpenAI(api_key=settings.openai.api_key)
+
+        prompt = (
+            "Summarize the assistant response into a VERY SHORT phrase (ideally 5–7 words) for a collapsible header.\n"
+            + "- Plain text only (no quotes/markdown).\n"
+            + "- Specific and helpful; prefer nouns/verbs.\n"
+            + "- Avoid punctuation and filler words.\n\n"
+            + src
+        )
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a concise summarizer."},
+                {"role": "user", "content": prompt},
+            ],
+            max_completion_tokens=64,
+            temperature=0.2,
+        )
+        summary = (resp.choices[0].message.content or "").strip()
+        if summary:
+            # Soft character cap to avoid long titles
+            if len(summary) > max_chars:
+                summary = summary[:max_chars].rstrip()
+            return summary
+    except Exception:
+        # Fall through to local first-sentence fallback
+        pass
+
+    # Local fallback: first sentence/line, lightly cap to ~7 words
+    import re
+
+    s = re.sub(r"^[#>*\-\s]+", "", src, flags=re.MULTILINE)
+    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
+    first = lines[0] if lines else src
+    parts = re.split(r"(?<=[.!?])\s+", first)
+    sent = parts[0].strip() if parts else first.strip()
+    words = sent.split()
+    summary = " ".join(words[:7]) if words else sent
+    if len(summary) > max_chars:
+        summary = summary[:max_chars].rstrip()
+    return summary or "Response"

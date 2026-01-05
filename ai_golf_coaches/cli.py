@@ -122,6 +122,7 @@ def cmd_build_catalog(channel: str) -> int:
             obj = {
                 "video_id": v.video_id,
                 "title": v.title,
+                "description": v.description or "",
                 "published_at": v.published_at.isoformat(),
                 "duration_seconds": v.duration_seconds,
                 "is_livestream": v.is_livestream,

@@ -29,6 +29,7 @@ class CatalogVideo(BaseModel):
     Attributes:
         video_id (str): The YouTube video ID.
         title (str): The video title.
+        description (str | None): The full video description text, if available.
         published_at (datetime): Timestamp when the video was published.
         duration_seconds (int): Video length in seconds.
         is_short (bool): Whether the video is short-form (heuristic threshold).
@@ -41,6 +42,7 @@ class CatalogVideo(BaseModel):
 
     video_id: str
     title: str
+    description: Optional[str] = None
     published_at: datetime
     duration_seconds: int
     is_short: bool = False
