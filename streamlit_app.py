@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Dict, List
@@ -107,7 +108,7 @@ def main() -> None:
     st.title("AI Golf Coach — Simple PoC")
     st.caption("Static-context agent demo. No RAG yet.")
 
-    # Sidebar: channel selector
+    # Sidebar: API key setup (top) + compact coach selector
     channel_keys = _load_channel_keys()
     if "channel" not in st.session_state:
         st.session_state["channel"] = (
@@ -116,36 +117,51 @@ def main() -> None:
             else channel_keys[0]
         )
     with st.sidebar:
-        st.header("Coach")
-        assets_dir = Path(__file__).resolve().parent / "ai_golf_coaches" / "assets"
-        riley_icon = assets_dir / "icon_riley.png"
-        milo_icon = assets_dir / "icon_milo.png"
+        # OpenAI key first for clarity
+        st.header("OpenAI Access")
+        st.caption("Provide your own API key. Stored only in this session.")
+        api_col1, api_col2 = st.columns([3, 1])
+        with api_col1:
+            api_val = st.text_input(
+                "OpenAI API Key",
+                type="password",
+                key="pending_openai_key",
+                help="Your key is used client-side in this session only.",
+            )
+        with api_col2:
+            set_clicked = st.button("Use", use_container_width=True)
+        clear_clicked = st.button("Clear Key", use_container_width=True)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if riley_icon.exists():
-                st.image(str(riley_icon), caption="Riley (EGS)", width=96)
-            if st.button("Select Riley", use_container_width=True):
-                st.session_state["channel"] = "elitegolfschools"
-        with col2:
-            if milo_icon.exists():
-                st.image(str(milo_icon), caption="Milo (MLG)", width=96)
-            if st.button("Select Milo", use_container_width=True):
-                st.session_state["channel"] = "milolinesgolf"
+        if set_clicked and api_val:
+            st.session_state["openai_api_key"] = api_val.strip()
+            # Set env var so AppSettings picks it up
+            os.environ["OPENAI__API_KEY"] = st.session_state["openai_api_key"]
+            st.success("API key set for this session.")
+        if clear_clicked:
+            st.session_state.pop("openai_api_key", None)
+            os.environ.pop("OPENAI__API_KEY", None)
+            st.info("API key cleared.")
 
-        # Show current selection with icon
-        st.divider()
-        st.subheader("Selected Coach")
-        sel = st.session_state["channel"]
-        if sel == "elitegolfschools" and riley_icon.exists():
-            st.image(str(riley_icon), width=64)
-            st.caption("Elite Golf Schools — Riley Andrews")
-        elif sel == "milolinesgolf" and milo_icon.exists():
-            st.image(str(milo_icon), width=64)
-            st.caption("Milo Lines Golf — Milo Lines")
+        if st.session_state.get("openai_api_key"):
+            st.caption("✅ API key is set for this session.")
         else:
-            st.markdown("🏌️")
-        st.markdown("Environment variable required: `OPENAI__API_KEY`")
+            st.caption("❗ Required to ask questions.")
+
+        st.divider()
+        st.header("Coach")
+        # Compact selector without additional icons/sections
+        current = st.session_state.get("channel", "elitegolfschools")
+        choice = st.radio(
+            "Select Coach",
+            options=["elitegolfschools", "milolinesgolf"],
+            index=0 if current == "elitegolfschools" else 1,
+            format_func=lambda k: "Riley (EGS)"
+            if k == "elitegolfschools"
+            else "Milo (MLG)",
+            horizontal=True,
+        )
+        if choice != current:
+            st.session_state["channel"] = choice
 
         # Assign selected channel for use below
         channel = st.session_state["channel"]
@@ -171,6 +187,11 @@ def main() -> None:
             except Exception as e:
                 st.error(f"Failed to set avatar: {type(e).__name__}: {e}")
 
+    # Require API key before proceeding to chat
+    if not st.session_state.get("openai_api_key"):
+        st.info("Add your OpenAI API key in the sidebar to start.")
+        return
+
     # Chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []  # list[dict(role, content)]
@@ -188,7 +209,9 @@ def main() -> None:
     for i, msg in enumerate(st.session_state.messages):
         user_custom = st.session_state.get("user_avatar_path")
         user_avatar = user_custom if (msg["role"] == "user" and user_custom) else "👤"
-        assistant_avatar = _assistant_avatar(channel)
+        # Preserve assistant icon based on the coach used when the message was created
+        assistant_channel = msg.get("channel") or channel
+        assistant_avatar = _assistant_avatar(assistant_channel)
         avatar = user_avatar if msg["role"] == "user" else assistant_avatar
         with st.chat_message(msg["role"], avatar=avatar):
             if msg["role"] == "assistant":
@@ -218,7 +241,11 @@ def main() -> None:
             try:
                 reply = run_agent(channel, prompt)
             except Exception as e:  # display-friendly error
-                reply = f"**Error:** {type(e).__name__}: {e}\n\n- Ensure `OPENAI__API_KEY` is set.\n- If the model is unavailable, update `ai_golf_coaches/agent.py` to a supported model (e.g., `gpt-4o`)."
+                reply = (
+                    f"**Error:** {type(e).__name__}: {e}\n\n"
+                    "- Paste your OpenAI API key in the sidebar.\n"
+                    "- If the model is unavailable, update ai_golf_coaches/agent.py to a supported model (e.g., gpt-4o)."
+                )
             try:
                 title = summarize_for_header(reply)
             except Exception:
@@ -226,7 +253,12 @@ def main() -> None:
             with st.expander(title, expanded=True):
                 st.markdown(reply)
         st.session_state.messages.append(
-            {"role": "assistant", "content": reply, "summary": title}
+            {
+                "role": "assistant",
+                "content": reply,
+                "summary": title,
+                "channel": channel,
+            }
         )
 
 
