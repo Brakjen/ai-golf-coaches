@@ -7,8 +7,14 @@ from typing import Dict, List
 
 import streamlit as st
 
-from ai_golf_coaches.agent import run_agent, summarize_for_header
-from ai_golf_coaches.config import load_channels_config
+from ai_golf_coaches.agent import (
+    _build_messages,  # reuse to mirror agent prompt construction
+    _clip_text_to_tokens,  # reuse to mirror agent context clipping
+    run_agent,
+    summarize_for_header,
+)
+from ai_golf_coaches.config import load_channels_config, resolve_channel_key
+from ai_golf_coaches.utils import prepare_constant_context_text
 
 
 def _repo_root() -> Path:
@@ -97,6 +103,102 @@ def _one_line_summary(text: str, max_len: int = 120) -> str:
     return sent or "Response"
 
 
+def _count_tokens(text: str) -> int:
+    """Count tokens in text using tiktoken with a sensible default encoding.
+
+    Tries "o200k_base" then falls back to "cl100k_base".
+
+    Args:
+        text (str): Input text to tokenize.
+
+    Returns:
+        int: Number of tokens.
+
+    """
+    try:
+        import tiktoken  # type: ignore
+    except Exception:
+        return 0
+    try:
+        enc = tiktoken.get_encoding("o200k_base")
+    except Exception:
+        enc = tiktoken.get_encoding("cl100k_base")
+    return len(enc.encode(text or ""))
+
+
+def _compute_turn_token_usage(
+    channel_key: str, question: str, reply: str
+) -> Dict[str, int | float]:
+    """Compute tokens for system+user (instructions+context+question) and assistant reply.
+
+    Mirrors the prompt construction in `ai_golf_coaches.agent.run_agent` for accuracy,
+    then tokenizes with tiktoken and returns a breakdown plus total and percent of 128k.
+
+    Args:
+        channel_key (str): Canonical channel key.
+        question (str): The user question just asked.
+        reply (str): The assistant reply content.
+
+    Returns:
+        Dict[str, int | float]: Keys: system_tokens, user_tokens, assistant_tokens, total_tokens, percent_128k.
+
+    """
+    root = Path(__file__).resolve().parent
+    channels = load_channels_config(root / "config" / "channels.yaml")
+    entry = channels.get(channel_key) or {}
+    instructions: str = str(entry.get("instructions") or "")
+
+    # Prepare and clip context as the agent does
+    context, _missing = prepare_constant_context_text(
+        channel_key, root=root, channels=channels, ensure_all=False
+    )
+    context = _clip_text_to_tokens(context, max_tokens=125_000)
+
+    messages, _ = _build_messages(instructions, context, question)
+    system_text = messages[0]["content"]
+    user_text = messages[1]["content"]
+
+    system_tokens = _count_tokens(system_text)
+    user_tokens = _count_tokens(user_text)
+    assistant_tokens = _count_tokens(reply)
+    total = system_tokens + user_tokens + assistant_tokens
+    percent = min(100.0, (total / 128_000) * 100.0)
+
+    return {
+        "system_tokens": system_tokens,
+        "user_tokens": user_tokens,
+        "assistant_tokens": assistant_tokens,
+        "total_tokens": total,
+        "percent_128k": percent,
+    }
+
+
+def _render_context_meter(
+    placeholder: st.delta_generator.DeltaGenerator, usage: Dict[str, int | float] | None
+) -> None:
+    """Render or update the context window meter in the sidebar.
+
+    Args:
+        placeholder: A Streamlit placeholder/container created with `st.sidebar.empty()`.
+        usage (dict | None): Token usage breakdown or None if not yet available.
+
+    Returns:
+        None
+
+    """
+    with placeholder.container():
+        st.header("Context Window")
+        if usage and isinstance(usage, dict):
+            pct = int(round(float(usage.get("percent_128k", 0.0))))
+            st.progress(pct, text=f"{pct}% of 128k window")
+            st.caption(
+                f"~{int(usage.get('total_tokens', 0))} tokens used (incl. output)"
+            )
+        else:
+            st.progress(0, text="0% of 128k window")
+            st.caption("Ask a question to estimate usage.")
+
+
 def main() -> None:
     """Generate the Streamlit app UI and handle interactions.
 
@@ -117,6 +219,10 @@ def main() -> None:
             else channel_keys[0]
         )
     with st.sidebar:
+        # Context window usage (top of sidebar) with live-updatable placeholder
+        _meter_ph = st.empty()
+        _render_context_meter(_meter_ph, st.session_state.get("last_token_usage"))
+
         # OpenAI key first for clarity
         st.header("OpenAI Access")
         st.caption("Provide your own API key. Stored only in this session.")
@@ -252,6 +358,8 @@ def main() -> None:
                 title = _one_line_summary(reply)
             with st.expander(title, expanded=True):
                 st.markdown(reply)
+
+        # Save assistant message to history first
         st.session_state.messages.append(
             {
                 "role": "assistant",
@@ -260,6 +368,19 @@ def main() -> None:
                 "channel": channel,
             }
         )
+
+        # After saving, compute and display token usage for this turn without rerun
+        try:
+            # Resolve canonical channel key for accurate config lookup
+            channels = load_channels_config(_repo_root() / "config" / "channels.yaml")
+            channel_key = resolve_channel_key(channel, channels) or channel
+            st.session_state["last_token_usage"] = _compute_turn_token_usage(
+                channel_key, prompt, reply
+            )
+            _render_context_meter(_meter_ph, st.session_state.get("last_token_usage"))
+        except Exception:
+            # Best-effort; silently skip if counting fails
+            pass
 
 
 if __name__ == "__main__":
