@@ -142,6 +142,7 @@ def prepare_constant_context_text(
     channels: Dict[str, dict] | None = None,
     channels_config_path: Path | str = "config/channels.yaml",
     ensure_all: bool = True,
+    category: Optional[str] = None,
 ) -> Tuple[str, List[str]]:
     """Build a master constant-context string from channel-defined videos.
 
@@ -162,6 +163,9 @@ def prepare_constant_context_text(
         ensure_all (bool): When True, raises an error if any listed transcript
             is missing. When False, returns a best-effort master string and the
             list of missing IDs.
+        category (str | None): Optional category to select videos from
+            constant_context_videos[category]. If None or category not found,
+            falls back to using constant_context_videos as a flat list.
 
     Returns:
         Tuple[str, List[str]]: A 2-tuple where the first element is the
@@ -180,7 +184,16 @@ def prepare_constant_context_text(
     if not entry:
         raise KeyError(f"Channel configuration not found for: {alias_or_key}")
 
-    video_ids: List[str] = list(entry.get("constant_context_videos") or [])
+    context_videos = entry.get("constant_context_videos") or []
+    # If category is specified and constant_context_videos is a dict, use that category
+    if category and isinstance(context_videos, dict):
+        # Normalize category for lookup (spaces to underscores, lowercase)
+        cat_key = category.strip().lower().replace(" ", "_")
+        video_ids: List[str] = list(context_videos.get(cat_key) or [])
+    elif isinstance(context_videos, list):
+        video_ids: List[str] = list(context_videos)
+    else:
+        video_ids: List[str] = []
     lines: List[str] = []
     missing: List[str] = []
 

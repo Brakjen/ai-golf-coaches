@@ -107,10 +107,11 @@ def _ensure_markdown(text: str) -> str:
     return f"## Answer\n\n{text}"
 
 
-def run_agent(channel_alias: str, question: str) -> str:
+def run_agent(channel_alias: str, question: str, category: str | None = None) -> str:
     """Run a minimal, no-RAG agent with static context and per-channel instructions.
 
-    Loads per-channel `instructions` from channels.yaml, assembles static context
+    Loads per-channel `instructions` from channels.yaml, classifies the question
+    into a category (if not provided), assembles category-specific static context
     from the channel's `constant_context_videos` transcripts, clips context to fit
     within a 128k-capable window, and calls an OpenAI chat model with hardcoded
     parameters.
@@ -118,6 +119,7 @@ def run_agent(channel_alias: str, question: str) -> str:
     Args:
         channel_alias (str): Alias, handle, or canonical key for the channel.
         question (str): Natural language question to ask the agent.
+        category (str | None): Optional pre-classified category to avoid re-classification.
 
     Returns:
         str: The agent's plain text response.
@@ -137,9 +139,16 @@ def run_agent(channel_alias: str, question: str) -> str:
     entry = channels.get(channel_key) or {}
     instructions: str = str(entry.get("instructions") or "")
 
+    # Classify question to select appropriate context category if not provided
+    if category is None:
+        from .classifier import classify_question_category
+
+        pred = classify_question_category(question, channel_alias=channel_alias)
+        category = pred.category
+
     # Prepare static context; tolerate missing transcripts for best-effort context
     context, missing = prepare_constant_context_text(
-        channel_key, root=root, channels=channels, ensure_all=False
+        channel_key, root=root, channels=channels, ensure_all=False, category=category
     )
 
     # Clip context to a conservative budget, reserving headroom for instructions and output
