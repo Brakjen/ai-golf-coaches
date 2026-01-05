@@ -18,11 +18,16 @@ from ai_golf_coaches.utils import prepare_constant_context_text
 
 # Model pricing per 1M tokens (input, output) in USD
 MODEL_PRICING = {
-    "gpt-4o-mini": (0.150, 0.600),  # $0.150/$0.600 per 1M tokens
-    "gpt-4o": (2.50, 10.00),  # $2.50/$10.00 per 1M tokens
-    "gpt-5": (5.00, 15.00),  # $5.00/$15.00 per 1M tokens (placeholder pricing)
-    "o1": (15.00, 60.00),  # $15.00/$60.00 per 1M tokens
-    "o1-mini": (3.00, 12.00),  # $3.00/$12.00 per 1M tokens
+    "gpt-4o-mini": (0.150, 0.600),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-5": (5.00, 15.00),
+}
+
+# Model info with two-word summaries
+MODEL_INFO = {
+    "gpt-4o-mini": "Super Fast",
+    "gpt-4o": "Balanced",
+    "gpt-5": "Most Capable",
 }
 
 
@@ -31,9 +36,17 @@ def _repo_root() -> Path:
 
 
 def _load_channel_keys() -> List[str]:
+    """Load enabled channel keys from config.
+
+    Returns:
+        List[str]: Sorted list of enabled channel keys.
+
+    """
     cfg_path = _repo_root() / "config" / "channels.yaml"
     channels: Dict[str, dict] = load_channels_config(cfg_path)
-    return sorted(channels.keys())
+    # Filter to only enabled channels
+    enabled = [key for key, cfg in channels.items() if cfg.get("enabled", True)]
+    return sorted(enabled)
 
 
 def _assistant_avatar(channel_key: str) -> str:
@@ -200,8 +213,11 @@ def _compute_turn_token_usage(
     percent = min(100.0, (total / 128_000) * 100.0)
 
     # Calculate costs
-    # Main agent call (gpt-5 hardcoded in agent.py)
-    main_cost = _calculate_cost(system_tokens + user_tokens, assistant_tokens, "gpt-5")
+    # Get the model used for this turn from session state, default to gpt-4o
+    main_model = st.session_state.get("selected_model", "gpt-4o")
+    main_cost = _calculate_cost(
+        system_tokens + user_tokens, assistant_tokens, main_model
+    )
     # Classification call (gpt-4o-mini default, ~16 tokens output, estimate ~200 input)
     classifier_cost = _calculate_cost(200, 16, "gpt-4o-mini")
     # Summarization call for header (gpt-4o-mini, estimate ~500 input, 64 output)
@@ -300,10 +316,23 @@ def _show_welcome_screen() -> bool:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         if logo_path.exists():
-            st.image(str(logo_path), use_container_width=True)
+            st.image(str(logo_path), width="content")
         else:
             st.markdown(
                 "<h1 style='text-align: center;'>🏌️ AI Golf Coach</h1>",
+                unsafe_allow_html=True,
+            )
+
+    # Video demonstration
+    with st.expander("Don't disturb the shaft", expanded=False):
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown(
+                '<iframe width="100%" height="400" '
+                'src="https://www.youtube.com/embed/pQY9jbMh4hg" '
+                'frameborder="0" allow="accelerometer; autoplay; '
+                "clipboard-write; encrypted-media; gyroscope; "
+                'picture-in-picture" allowfullscreen></iframe>',
                 unsafe_allow_html=True,
             )
 
@@ -377,10 +406,20 @@ def _show_welcome_screen() -> bool:
             "These are the actual videos the AI learns from."
         )
 
-        # Channel selector
+        # Channel selector (only show enabled channels)
+        cfg_path = Path(__file__).resolve().parent / "config" / "channels.yaml"
+        channels_cfg = load_channels_config(cfg_path)
+        enabled_channels = [
+            k for k, v in channels_cfg.items() if v.get("enabled", True)
+        ]
+
+        if not enabled_channels:
+            st.warning("No channels are currently enabled.")
+            return True
+
         lib_channel = st.radio(
             "Select Channel",
-            options=["elitegolfschools", "milolinesgolf"],
+            options=enabled_channels,
             format_func=lambda k: "Elite Golf Schools (Riley)"
             if k == "elitegolfschools"
             else "Milo Lines Golf",
@@ -390,8 +429,6 @@ def _show_welcome_screen() -> bool:
 
         # Load channel config to get video IDs per category
         try:
-            cfg_path = Path(__file__).resolve().parent / "config" / "channels.yaml"
-            channels_cfg = load_channels_config(cfg_path)
             channel_entry = channels_cfg.get(lib_channel, {})
             context_videos = channel_entry.get("constant_context_videos", {})
 
@@ -478,14 +515,36 @@ def _show_welcome_screen() -> bool:
     # Dismiss button
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
-        if st.button(
-            "I am ready to start ⛳", use_container_width=True, type="primary"
-        ):
+        if st.button("I am ready to start ⛳", width="content", type="primary"):
             st.session_state["welcome_dismissed"] = True
             st.session_state["show_help"] = False
             st.rerun()
 
     return False
+
+
+@st.dialog("Capture Avatar Photo")
+def _avatar_capture_dialog() -> None:
+    """Dialog for capturing user avatar photo."""
+    st.write("Use your camera to capture a custom avatar image.")
+    captured = st.camera_input("Capture photo", label_visibility="collapsed")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Save", use_container_width=True, type="primary"):
+            if captured is not None:
+                try:
+                    path = _save_avatar_image(captured.getvalue())
+                    st.session_state["user_avatar_path"] = path
+                    st.success("Avatar saved!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+            else:
+                st.warning("Capture a photo first")
+    with col2:
+        if st.button("Cancel", use_container_width=True, type="secondary"):
+            st.rerun()
 
 
 def main() -> None:
@@ -505,6 +564,14 @@ def main() -> None:
     st.title("AI Golf Coach — Simple PoC")
     st.caption("Static-context agent demo. No RAG yet.")
 
+    logo_path = (
+        Path(__file__).resolve().parent
+        / "ai_golf_coaches"
+        / "assets"
+        / "logo_small.png"
+    )
+    st.logo(logo_path, icon_image=logo_path, size="large")
+
     # Initialize session state for API key input
     if "pending_openai_key" not in st.session_state:
         st.session_state["pending_openai_key"] = ""
@@ -518,10 +585,7 @@ def main() -> None:
             else channel_keys[0]
         )
     with st.sidebar:
-        # OpenAI key first for clarity
-        st.header("OpenAI Access")
-        st.caption("Provide your own API key. Stored only in this session.")
-
+        # OpenAI API key
         def clear_api_key() -> None:
             """Callback to clear API key input and session state."""  # noqa: D401
             st.session_state["pending_openai_key"] = ""
@@ -534,26 +598,26 @@ def main() -> None:
                 "OpenAI API Key",
                 type="password",
                 key="pending_openai_key",
-                help="Your key is used client-side in this session only.",
+                label_visibility="collapsed",
+                placeholder="Enter API key...",
             )
         with api_col2:
-            set_clicked = st.button("Use", use_container_width=True)
-        clear_clicked = st.button(
-            "Clear Key", use_container_width=True, on_click=clear_api_key
-        )
+            set_clicked = st.button("Set", use_container_width=True)
+        if st.button(
+            "Clear", use_container_width=True, on_click=clear_api_key, type="secondary"
+        ):
+            pass
 
         if set_clicked and api_val:
             st.session_state["openai_api_key"] = api_val.strip()
-            # Set env var so AppSettings picks it up
             os.environ["OPENAI__API_KEY"] = st.session_state["openai_api_key"]
-            st.success("API key set for this session.")
-        if clear_clicked:
-            st.info("API key cleared.")
+            st.success("✓ Key set")
 
-        if st.session_state.get("openai_api_key"):
-            st.caption("✅ API key is set for this session.")
-        else:
-            st.caption("❗ Required to ask questions.")
+        st.caption(
+            "✅ Ready"
+            if st.session_state.get("openai_api_key")
+            else "❗ API key required"
+        )
 
         # Context window usage (top of sidebar) with live-updatable placeholder
         _meter_ph = st.empty()
@@ -565,50 +629,52 @@ def main() -> None:
         _render_session_cost(_cost_ph, cumulative_cost)
 
         st.divider()
-        st.header("Coach")
-        # Compact selector without additional icons/sections
+        # Coach selector
         current = st.session_state.get("channel", "elitegolfschools")
-        choice = st.radio(
-            "Select Coach",
-            options=["elitegolfschools", "milolinesgolf"],
-            index=0 if current == "elitegolfschools" else 1,
-            format_func=lambda k: "Riley (EGS)"
-            if k == "elitegolfschools"
-            else "Milo (MLG)",
-            horizontal=True,
-        )
-        if choice != current:
-            st.session_state["channel"] = choice
+
+        if not channel_keys:
+            st.warning("No channels enabled.")
+        else:
+            try:
+                current_idx = (
+                    channel_keys.index(current) if current in channel_keys else 0
+                )
+            except ValueError:
+                current_idx = 0
+
+            choice = st.radio(
+                "Coach",
+                options=channel_keys,
+                index=current_idx,
+                format_func=lambda k: "Riley (EGS)"
+                if k == "elitegolfschools"
+                else "Milo (MLG)",
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+            if choice != current:
+                st.session_state["channel"] = choice
 
         # Assign selected channel for use below
         channel = st.session_state["channel"]
 
+        # Always use gpt-5 (model selection disabled)
+        st.session_state["selected_model"] = "gpt-5"
+        selected_model = "gpt-5"
+
         st.divider()
-        st.header("User Avatar")
-        st.caption("Capture a custom user icon.")
-        captured = st.camera_input("Capture from camera")
-        col1, col2 = st.columns(2)
+        # Avatar controls
+        col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("Use default"):
-                st.session_state.pop("user_avatar_path", None)
+            if st.button("📸 Photo", use_container_width=True, help="Capture avatar"):
+                _avatar_capture_dialog()
         with col2:
-            if st.button("Clear custom avatar"):
+            if st.button("Reset", use_container_width=True, type="secondary"):
                 st.session_state.pop("user_avatar_path", None)
-
-        # Persist captured input if provided
-        if captured is not None:
-            try:
-                path = _save_avatar_image(captured.getvalue())
-                st.session_state["user_avatar_path"] = path
-                st.success("Custom user avatar set.")
-            except Exception as e:
-                st.error(f"Failed to set avatar: {type(e).__name__}: {e}")
-
-        # Help button to reopen welcome screen
-        st.divider()
-        if st.button("📖 Show Instructions & Info", use_container_width=True):
-            st.session_state["show_help"] = True
-            st.rerun()
+        with col3:
+            if st.button("📖 Info", use_container_width=True, type="secondary"):
+                st.session_state["show_help"] = True
+                st.rerun()
 
     # Require API key before proceeding to chat
     if not st.session_state.get("openai_api_key"):
@@ -672,10 +738,12 @@ def main() -> None:
         except Exception:
             question_category = None
 
-        # Call agent with pre-classified category
+        # Call agent with pre-classified category and selected model
         with st.chat_message("assistant", avatar=_assistant_avatar(channel)):
             try:
-                reply = run_agent(channel, prompt, category=question_category)
+                reply = run_agent(
+                    channel, prompt, category=question_category, model=selected_model
+                )
             except Exception as e:  # display-friendly error
                 reply = (
                     f"**Error:** {type(e).__name__}: {e}\n\n"

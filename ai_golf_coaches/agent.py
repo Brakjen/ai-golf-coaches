@@ -107,7 +107,12 @@ def _ensure_markdown(text: str) -> str:
     return f"## Answer\n\n{text}"
 
 
-def run_agent(channel_alias: str, question: str, category: str | None = None) -> str:
+def run_agent(
+    channel_alias: str,
+    question: str,
+    category: str | None = None,
+    model: str = "gpt-4o",
+) -> str:
     """Run a minimal, no-RAG agent with static context and per-channel instructions.
 
     Loads per-channel `instructions` from channels.yaml, classifies the question
@@ -120,6 +125,7 @@ def run_agent(channel_alias: str, question: str, category: str | None = None) ->
         channel_alias (str): Alias, handle, or canonical key for the channel.
         question (str): Natural language question to ask the agent.
         category (str | None): Optional pre-classified category to avoid re-classification.
+        model (str): OpenAI model to use (default: gpt-4o).
 
     Returns:
         str: The agent's plain text response.
@@ -169,16 +175,16 @@ def run_agent(channel_alias: str, question: str, category: str | None = None) ->
 
     client = OpenAI(api_key=settings.openai.api_key)
 
-    # Hardcoded chat parameters per minimal test requirement
-    model = "gpt-5"  # 128k-capable placeholder
+    # Set parameters - gpt-5 requires temperature=1, others use 0.7
     max_output_tokens = 1024 * 4
+    temperature = 1.0 if model == "gpt-5" else 0.7
 
-    # Call chat completions
+    # Call chat completions with standard parameters
     resp = client.chat.completions.create(
         model=model,
         messages=messages,
         max_completion_tokens=max_output_tokens,
-        reasoning_effort="medium",
+        temperature=temperature,
     )
 
     text = resp.choices[0].message.content or ""
