@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Tuple
 
+from .agent import run_agent
 from .config import AppSettings, load_channels_config, resolve_channel_key
 from .constants import COMBINE_DEFAULT_SECONDS, FETCH_MAX_WORKERS
 from .indexing import build_faiss_index, query_index
@@ -364,6 +365,18 @@ def build_parser() -> argparse.ArgumentParser:
                     0,
                 )[1]
             )(query_index(args.channel, args.question, args.top_k, args.model))
+        )
+    )
+
+    p_agent = sub.add_parser(
+        "agent",
+        help="Run a minimal no-RAG agent using static context and channel instructions",
+    )
+    p_agent.add_argument("channel", help="Alias, handle, or canonical key")
+    p_agent.add_argument("question", help="Natural language question")
+    p_agent.set_defaults(
+        func=lambda args: (
+            (lambda out: (print(out), 0)[1])(run_agent(args.channel, args.question))
         )
     )
 

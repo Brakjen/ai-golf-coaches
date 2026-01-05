@@ -98,6 +98,20 @@ We can't parallelize too much, and we need to back off a bit after a failed requ
 
 
 ### Indexing
+Build index on videos for channels individually.
+This is done.
 
 
 ### Agent Definitions
+#### Simple test framework
+- Use an openai model that accepts 128k context tokens
+- Don't use any RAG
+- We will provide a static context, as defined in the channels yaml file. A util prepares the context.
+- We pass the static context to the agent, and let it form a response based on this.
+- Agent instructions/tones is defined in its own file under config. We also pass this to the agent.
+- Again, no RAG yet. I want to test the static context first.
+
+Lets make a very simple function that takes in a question that gets passed to the openai model, along with the additional context mentioned above.
+I don't want special CLI options now.
+I don't want testing frameworks. By test I mean a very simple proof of concept that lets me ask an agent that has my special context.
+Lets hard code models and parameters for now to keep it simple.
