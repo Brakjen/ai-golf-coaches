@@ -719,8 +719,84 @@ def main() -> None:
             else:
                 st.markdown(msg["content"])  # nosec - display only
 
-    # Chat input
-    prompt = st.chat_input("Ask your golf question...")
+    # Input section at bottom - either show transcription editor or normal chat input
+    if (
+        "pending_transcription" in st.session_state
+        and st.session_state["pending_transcription"]
+    ):
+        # Show editable transcription with Send/Cancel buttons
+        st.markdown("---")
+        transcribed = st.text_area(
+            "Edit transcription if needed:",
+            value=st.session_state["pending_transcription"],
+            height=100,
+            key="transcription_editor",
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✓ Send", use_container_width=True, type="primary"):
+                prompt = transcribed.strip()
+                st.session_state.pop("pending_transcription", None)
+                st.session_state.pop("voice_input", None)
+                # Will process below
+            else:
+                prompt = None
+        with col2:
+            if st.button("✕ Cancel", use_container_width=True, type="secondary"):
+                st.session_state.pop("pending_transcription", None)
+                st.session_state.pop("voice_input", None)
+                st.rerun()
+    else:
+        # Normal input: chat input + audio button
+        col1, col2 = st.columns([20, 1])
+        with col1:
+            prompt = st.chat_input("Ask your golf question...")
+        with col2:
+            audio_input = st.audio_input(
+                "🎤", label_visibility="collapsed", key="voice_input"
+            )
+
+        # Process audio transcription if provided
+        if audio_input is not None:
+            try:
+                from openai import OpenAI
+
+                with st.spinner("🎧 Transcribing..."):
+                    client = OpenAI(api_key=st.session_state.get("openai_api_key"))
+
+                    # Save audio bytes to temporary file for Whisper API
+                    import tempfile
+
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".wav", delete=False
+                    ) as tmp_file:
+                        tmp_file.write(audio_input.getvalue())
+                        tmp_file_path = tmp_file.name
+
+                    try:
+                        with open(tmp_file_path, "rb") as audio_file:
+                            transcript = client.audio.transcriptions.create(
+                                model="whisper-1",
+                                file=audio_file,
+                                language="en",
+                            )
+
+                        transcribed_text = transcript.text.strip()
+                        if transcribed_text:
+                            # Store transcription for user review
+                            st.session_state["pending_transcription"] = transcribed_text
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ No speech detected")
+                    finally:
+                        # Clean up temporary file
+                        import os as _os
+
+                        if _os.path.exists(tmp_file_path):
+                            _os.unlink(tmp_file_path)
+            except Exception as e:
+                st.error(f"⚠️ Transcription failed: {type(e).__name__}: {e}")
+
     if prompt:
         # Show user message
         st.session_state.messages.append({"role": "user", "content": prompt})
