@@ -206,5 +206,5 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 Sandbox.ipynb
-data/**
+# data/**  # Commented out - transcripts needed for deployment
 sandbox.ipynb
