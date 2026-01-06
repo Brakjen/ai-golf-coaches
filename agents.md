@@ -96,10 +96,28 @@ We can't parallelize too much, and we need to back off a bit after a failed requ
 - We always give accurate type hints to our functions.
 - We always give type hints to in line variable definitions when the type is not obvious, for example when a function returns one of our own custom data contract classes.
 
+### Extracting QA segments from livestreams
+We will have to extract all questions and answers from all the livestreams.
+I think the best way is to use a good openai model to read the transcripts, parse all user questions and coach answers,
+and store these as jsonl.
+Then we can later build an index on the QA segments, and match our end user questions with the QA segments.
 
-### Indexing
+We could additionally match the AI coach answer against the QA segment answers, and showcase those also.
+Two different roads to relevant content for our end users.
+
+### Indexing of long form videos
 Build index on videos for channels individually.
-This is done.
+I don't want to store the index locally, but store it in openai.
+This way we keep the repo clean and light, and deployment faster.
+
+The index will be used for semantic matching of question with our transcription chunks.
+This way we can present to the user the most relevant videos and timestamps.
+
+### Indexing of livestreams
+Similar idea as above.
+We will match the question against all other livestream questions,
+and present to the user the most similar ones along with the coach response.
+I think this will be useful if the matching works well.
 
 
 ### Agent Definitions

@@ -2,6 +2,15 @@ elitegolfschools:
   enabled: true
   handle: "@elitegolfschools"
   channel_id: "UCePCyXFuu_B-8bPuY-cvn4Q"
+  vector_store_ids:
+    longform:
+      all: vs_695d6e3ee54881918d4d5c276329d71e  # Catch-all store for RAG fallback (NOT for static context)
+      ball_control: vs_695d6e00d87881918c74efd73f04630c
+      dynamic_exercises: vs_695d6e0b8d908191868065dd65a9fdfa
+      full_swing: vs_695d6e191bb08191ad9b7002fda0650e
+      mental_game: vs_695d6e260614819194eeebc26ae22960
+      putting: vs_695d6e2eef3481918ed52e41c9ccf61b
+      short_game: vs_695d6e379cfc819196e3885da79d9979
   aliases:
     - egs
     - riley
@@ -112,6 +121,15 @@ milolinesgolf:
   enabled: false
   handle: "@milolinesgolf"
   channel_id: "UC6W3WoE15mnJNYFVh8-ksJw"
+  vector_store_ids:
+    longform:
+      all: ""  # Catch-all store for RAG fallback (NOT for static context)
+      ball_control: ""
+      dynamic_exercises: ""
+      full_swing: ""
+      mental_game: ""
+      putting: ""
+      short_game: ""
   aliases:
     - mlg
     - milo

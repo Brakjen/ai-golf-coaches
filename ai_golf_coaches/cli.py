@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -10,7 +11,11 @@ from typing import Optional, Tuple
 from .agent import run_agent
 from .config import AppSettings, load_channels_config, resolve_channel_key
 from .constants import COMBINE_DEFAULT_SECONDS, FETCH_MAX_WORKERS
-from .indexing import build_faiss_index, query_index
+from .indexing import (
+    build_faiss_index,
+    build_hosted_vector_stores_longform,
+    query_index,
+)
 from .transcripts import combine_chunks, fetch_transcript_chunks, write_transcript_jsonl
 from .youtube_client import (
     fetch_channel_uploads_video_ids,
@@ -368,6 +373,87 @@ def build_parser() -> argparse.ArgumentParser:
             )(query_index(args.channel, args.question, args.top_k, args.model))
         )
     )
+
+    p_vs = sub.add_parser(
+        "build-vector-stores",
+        help="Build OpenAI-hosted vector stores for longform transcripts (one per category)",
+    )
+    p_vs.add_argument("channel", help="Alias, handle, or canonical key")
+    p_vs.add_argument(
+        "--categories",
+        type=str,
+        default=None,
+        help="Comma-separated category list (default: all configured categories)",
+    )
+    p_vs.add_argument(
+        "--include-livestreams",
+        action="store_true",
+        help="Include livestream chunks in longform ingestion",
+    )
+    p_vs.add_argument(
+        "--max-part-mb",
+        type=int,
+        default=100,
+        help="Max size per uploaded file part in MB (default: 100)",
+    )
+    p_vs.add_argument(
+        "--build-all-store",
+        action="store_true",
+        default=True,
+        help='Build "all" catch-all store for RAG fallback (default: true, NOT for static context)',
+    )
+    p_vs.add_argument(
+        "--no-build-all-store",
+        action="store_false",
+        dest="build_all_store",
+        help='Skip building "all" catch-all store',
+    )
+
+    def _cmd_build_vector_stores(args: argparse.Namespace) -> int:
+        if args.channel is None or str(args.channel).strip() == "":
+            print(
+                "Missing required argument: channel. Try: aig build-vector-stores <alias>"
+            )
+            return 2
+        # Hosted vector store ingestion must use a dedicated app-owned key.
+        # Do not fall back to OPENAI__API_KEY (user completion key).
+        _ = AppSettings()  # still validate env structure early
+        if not os.getenv("OPENAI__API_KEY_STORAGE_INDEX"):
+            print("OPENAI__API_KEY_STORAGE_INDEX not configured.")
+            return 1
+
+        cats = None
+        if args.categories:
+            cats = [c.strip() for c in str(args.categories).split(",") if c.strip()]
+
+        vs_ids, missing = build_hosted_vector_stores_longform(
+            args.channel,
+            categories=cats,
+            include_livestreams=bool(args.include_livestreams),
+            max_part_mb=int(args.max_part_mb),
+            build_all_store=bool(args.build_all_store),
+        )
+
+        print(
+            "Vector stores created (paste into config/channels.yaml under vector_store_ids.longform):"
+        )
+        for cat, vs_id in sorted(vs_ids.items()):
+            print(f"  {cat}: {vs_id}")
+
+        if "all" in vs_ids:
+            print(
+                '\nNote: "all" store is for RAG retrieval fallback only (NOT for static context)'
+            )
+
+        any_missing = any(missing.get(cat) for cat in missing)
+        if any_missing:
+            print("\nMissing transcripts (video_id) by category:")
+            for cat, vids in sorted(missing.items()):
+                if vids:
+                    print(f"  {cat}: {', '.join(vids)}")
+        return 0
+
+    p_vs.set_defaults(func=_cmd_build_vector_stores)
 
     p_agent = sub.add_parser(
         "agent",
