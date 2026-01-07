@@ -8,12 +8,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Tuple
 
-from .agent import run_agent
+from .agent import _format_video_recommendations, run_agent
 from .config import AppSettings, load_channels_config, resolve_channel_key
 from .constants import COMBINE_DEFAULT_SECONDS, FETCH_MAX_WORKERS
 from .indexing import (
     build_faiss_index,
     build_hosted_vector_stores_longform,
+    query_hosted_vector_store,
     query_index,
 )
 from .transcripts import combine_chunks, fetch_transcript_chunks, write_transcript_jsonl
@@ -376,7 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_vs = sub.add_parser(
         "build-vector-stores",
-        help="Build OpenAI-hosted vector stores for longform transcripts (one per category)",
+        help="Build OpenAI-hosted vector stores (idempotent - reuses existing stores from config)",
     )
     p_vs.add_argument("channel", help="Alias, handle, or canonical key")
     p_vs.add_argument(
@@ -435,8 +436,11 @@ def build_parser() -> argparse.ArgumentParser:
         )
 
         print(
-            "Vector stores created (paste into config/channels.yaml under vector_store_ids.longform):"
+            "\n"
+            + "=" * 70
+            + "\nVector stores created/updated (paste into config/channels.yaml):"
         )
+        print("Under vector_store_ids.longform:")
         for cat, vs_id in sorted(vs_ids.items()):
             print(f"  {cat}: {vs_id}")
 
@@ -444,6 +448,11 @@ def build_parser() -> argparse.ArgumentParser:
             print(
                 '\nNote: "all" store is for RAG retrieval fallback only (NOT for static context)'
             )
+
+        print(
+            "\n\u2713 Command is idempotent - reuses existing stores from config and"
+            "\n  refreshes their content. Safe to re-run when you add new transcripts."
+        )
 
         any_missing = any(missing.get(cat) for cat in missing)
         if any_missing:
@@ -455,17 +464,89 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_vs.set_defaults(func=_cmd_build_vector_stores)
 
+    p_query_vs = sub.add_parser(
+        "query-vector-store",
+        help="Query OpenAI-hosted vector store for relevant transcript chunks",
+    )
+    p_query_vs.add_argument("channel", help="Alias, handle, or canonical key")
+    p_query_vs.add_argument("question", help="Natural language question")
+    p_query_vs.add_argument("category", help="Category to query (e.g., full_swing)")
+    p_query_vs.add_argument(
+        "--top-k",
+        type=int,
+        default=20,
+        help="Number of results to return (default: 20)",
+    )
+
+    def _cmd_query_vector_store(args: argparse.Namespace) -> int:
+        if not args.channel or not args.question or not args.category:
+            print("Missing required arguments: channel, question, category")
+            return 2
+
+        try:
+            chunks = query_hosted_vector_store(
+                args.channel, args.question, args.category, args.top_k
+            )
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+
+        if not chunks:
+            print("No results found.")
+            return 0
+
+        print(f"Found {len(chunks)} results:\n")
+        for i, chunk in enumerate(chunks, 1):
+            timestamp_url = (
+                f"https://youtube.com/watch?v={chunk.video_id}&t={int(chunk.start)}s"
+            )
+            score_str = (
+                f" (score: {chunk.score:.4f})" if chunk.score is not None else ""
+            )
+            print(f"{i}. [{chunk.title or chunk.video_id}]({timestamp_url}){score_str}")
+            print(f"   Time: {chunk.start:.2f}s - {chunk.end:.2f}s")
+            print(f"   Livestream: {chunk.is_livestream}")
+            print(
+                f"   Text: {chunk.text[:200]}{'...' if len(chunk.text) > 200 else ''}"
+            )
+            print()
+
+        return 0
+
+    p_query_vs.set_defaults(func=_cmd_query_vector_store)
+
     p_agent = sub.add_parser(
         "agent",
         help="Run a minimal no-RAG agent using static context and channel instructions",
     )
     p_agent.add_argument("channel", help="Alias, handle, or canonical key")
     p_agent.add_argument("question", help="Natural language question")
-    p_agent.set_defaults(
-        func=lambda args: (
-            (lambda out: (print(out), 0)[1])(run_agent(args.channel, args.question))
-        )
+    p_agent.add_argument(
+        "--json",
+        action="store_true",
+        help="Output response as JSON instead of formatted text",
     )
+
+    def _cmd_agent(args: argparse.Namespace) -> int:
+        response = run_agent(args.channel, args.question)
+
+        if args.json:
+            # Output as JSON
+            import json
+
+            print(json.dumps(response.model_dump(), indent=2, ensure_ascii=False))
+        else:
+            # Output formatted for terminal
+            print(response.response_text)
+            if response.video_recommendations:
+                video_section = _format_video_recommendations(
+                    response.video_recommendations
+                )
+                print(video_section)
+
+        return 0
+
+    p_agent.set_defaults(func=_cmd_agent)
 
     return parser
 

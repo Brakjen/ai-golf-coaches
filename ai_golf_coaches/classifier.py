@@ -7,12 +7,12 @@ from pydantic import BaseModel, Field
 from .config import AppSettings, load_channels_config, resolve_channel_key
 
 DEFAULT_CATEGORIES: List[str] = [
-    "full swing",
-    "short game",
-    "mental game",
-    "ball control",
+    "full_swing",
+    "short_game",
+    "mental_game",
+    "ball_control",
     "putting",
-    "dynamic exercises",
+    "dynamic_exercises",
 ]
 
 
@@ -102,8 +102,15 @@ def classify_question_category(
     system = (
         "You are a strict single-label classifier for golf questions.\n"
         "Return ONLY one label from the provided options.\n"
-        "Output the label string with no punctuation, no quotes, no explanation.\n"
-        "If ambiguous, ALWAYS select full swing."
+        "Output the label string with no punctuation, no quotes, no explanation.\n\n"
+        "Category definitions:\n"
+        "- 'ball_control': Questions about shot shape, ball flight, curves, draws, fades, start line, trajectory\n"
+        "- 'full_swing': Questions about swing mechanics, technique, positions, movement patterns\n"
+        "- 'short_game': Chipping, pitching, bunker shots (not putting)\n"
+        "- 'putting': Putting stroke, green reading, alignment on the green\n"
+        "- 'mental_game': Course management, mindset, psychology, strategy\n"
+        "- 'dynamic_exercises': Drills, training exercises, practice routines\n\n"
+        "When a question asks about BOTH ball flight AND mechanics, choose 'ball_control'."
     )
     user = (
         "Categories: "

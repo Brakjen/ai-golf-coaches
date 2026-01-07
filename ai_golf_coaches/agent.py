@@ -1,10 +1,63 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
-from typing import Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+
+from pydantic import BaseModel, Field
 
 from .config import AppSettings, load_channels_config, resolve_channel_key
 from .utils import prepare_constant_context_text
+
+if TYPE_CHECKING:
+    from .indexing import IndexedChunk
+
+
+class VideoSegment(BaseModel):
+    """A continuous segment of a video with relevant content.
+
+    Attributes:
+        start_seconds (int): Start time in seconds.
+        end_seconds (int): End time in seconds.
+        avg_relevance_score (float | None): Average relevance score for this segment.
+
+    """
+
+    start_seconds: int
+    end_seconds: int
+    avg_relevance_score: Optional[float] = None
+
+
+class VideoRecommendation(BaseModel):
+    """A recommended video with relevant segments.
+
+    Attributes:
+        video_id (str): YouTube video ID.
+        title (str): Video title.
+        url (str): Full YouTube URL.
+        segments (list[VideoSegment]): List of relevant segments in the video.
+
+    """
+
+    video_id: str
+    title: str
+    url: str
+    segments: List[VideoSegment] = Field(default_factory=list)
+
+
+class AgentResponse(BaseModel):
+    """Structured response from the golf coach agent.
+
+    Attributes:
+        response_text (str): The main agent response (markdown formatted).
+        category (str): The classified question category.
+        video_recommendations (list[VideoRecommendation]): RAG-retrieved video recommendations.
+
+    """
+
+    response_text: str
+    category: str
+    video_recommendations: List[VideoRecommendation] = Field(default_factory=list)
 
 
 def _clip_text_to_tokens(
@@ -107,12 +160,159 @@ def _ensure_markdown(text: str) -> str:
     return f"## Answer\n\n{text}"
 
 
+def _build_video_recommendations(
+    chunks: List[IndexedChunk],
+) -> List[VideoRecommendation]:
+    """Build structured video recommendations from retrieved chunks.
+
+    Groups chunks by video_id and consolidates nearby timestamps into segments.
+
+    Args:
+        chunks (List[IndexedChunk]): Retrieved chunks from vector store.
+
+    Returns:
+        List[VideoRecommendation]: Structured video recommendations.
+
+    """
+    if not chunks:
+        return []
+
+    # Group chunks by video_id while preserving order of first appearance
+    video_map: Dict[str, List[IndexedChunk]] = defaultdict(list)
+    video_order: List[str] = []
+    for chunk in chunks:
+        if chunk.video_id not in video_map:
+            video_order.append(chunk.video_id)
+        video_map[chunk.video_id].append(chunk)
+
+    recommendations: List[VideoRecommendation] = []
+
+    for video_id in video_order:
+        video_chunks = video_map[video_id]
+        first_chunk = video_chunks[0]
+        title = first_chunk.title or video_id
+        video_url = f"https://youtube.com/watch?v={video_id}"
+
+        # Sort chunks by start time
+        sorted_chunks = sorted(video_chunks, key=lambda c: c.start)
+
+        # Group nearby timestamps into ranges (within 30 seconds)
+        timestamp_groups: List[List[IndexedChunk]] = []
+        current_group: List[IndexedChunk] = []
+
+        for chunk in sorted_chunks:
+            if not current_group:
+                current_group.append(chunk)
+            else:
+                # If this chunk starts within 30s of the last chunk's end, add to current group
+                last_chunk = current_group[-1]
+                if chunk.start - last_chunk.end <= 30:
+                    current_group.append(chunk)
+                else:
+                    # Start new group
+                    timestamp_groups.append(current_group)
+                    current_group = [chunk]
+
+        # Don't forget the last group
+        if current_group:
+            timestamp_groups.append(current_group)
+
+        # Build segments from groups
+        segments: List[VideoSegment] = []
+        for group in timestamp_groups:
+            start_t = int(group[0].start)
+            end_t = int(group[-1].end)
+
+            # Calculate average score for the group
+            scores = [c.score for c in group if c.score is not None]
+            avg_score = sum(scores) / len(scores) if scores else None
+
+            segments.append(
+                VideoSegment(
+                    start_seconds=start_t,
+                    end_seconds=end_t,
+                    avg_relevance_score=avg_score,
+                )
+            )
+
+        recommendations.append(
+            VideoRecommendation(
+                video_id=video_id,
+                title=title,
+                url=video_url,
+                segments=segments,
+            )
+        )
+
+    return recommendations
+
+
+def _format_video_recommendations(recommendations: List[VideoRecommendation]) -> str:
+    """Format video recommendations as markdown for display.
+
+    Args:
+        recommendations (List[VideoRecommendation]): Structured video recommendations.
+
+    Returns:
+        str: Markdown-formatted video recommendations section.
+
+    """
+    if not recommendations:
+        return ""
+
+    lines = ["\n\n---\n\n## 📺 Relevant Videos\n"]
+
+    for rec in recommendations:
+        lines.append(f"\n### [{rec.title}]({rec.url})")
+
+        # Format segments
+        if (
+            len(rec.segments) == 1
+            and rec.segments[0].start_seconds == rec.segments[0].end_seconds
+        ):
+            # Single timestamp
+            seg = rec.segments[0]
+            score_str = (
+                f" (relevance: {seg.avg_relevance_score:.2f})"
+                if seg.avg_relevance_score
+                else ""
+            )
+            timestamp_url = f"{rec.url}&t={seg.start_seconds}s"
+            lines.append(
+                f"- [Jump to {seg.start_seconds}s]({timestamp_url}){score_str}"
+            )
+        else:
+            # Multiple segments
+            lines.append("\n**Relevant segments:**")
+            for seg in rec.segments:
+                score_str = (
+                    f" (avg relevance: {seg.avg_relevance_score:.2f})"
+                    if seg.avg_relevance_score
+                    else ""
+                )
+                timestamp_url = f"{rec.url}&t={seg.start_seconds}s"
+                if seg.start_seconds == seg.end_seconds:
+                    # Single point
+                    lines.append(
+                        f"- [{seg.start_seconds}s]({timestamp_url}){score_str}"
+                    )
+                else:
+                    # Range
+                    lines.append(
+                        f"- [{seg.start_seconds}s - {seg.end_seconds}s]({timestamp_url}){score_str}"
+                    )
+
+    return "\n".join(lines)
+
+
 def run_agent(
     channel_alias: str,
     question: str,
     category: str | None = None,
     model: str = "gpt-4o",
-) -> str:
+    include_video_recommendations: bool = True,
+    rag_top_k: int = 20,
+) -> AgentResponse:
     """Run a minimal, no-RAG agent with static context and per-channel instructions.
 
     Loads per-channel `instructions` from channels.yaml, classifies the question
@@ -121,14 +321,19 @@ def run_agent(
     within a 128k-capable window, and calls an OpenAI chat model with hardcoded
     parameters.
 
+    Optionally queries hosted vector stores for relevant video recommendations
+    that are appended to the response as a separate section.
+
     Args:
         channel_alias (str): Alias, handle, or canonical key for the channel.
         question (str): Natural language question to ask the agent.
         category (str | None): Optional pre-classified category to avoid re-classification.
         model (str): OpenAI model to use (default: gpt-4o).
+        include_video_recommendations (bool): Whether to query RAG for video recommendations (default: True).
+        rag_top_k (int): Number of RAG results to retrieve (default: 20).
 
     Returns:
-        str: The agent's plain text response.
+        AgentResponse: Structured response with text and video recommendations.
 
     Raises:
         RuntimeError: If OpenAI settings or API key are missing.
@@ -188,7 +393,32 @@ def run_agent(
     )
 
     text = resp.choices[0].message.content or ""
-    return _ensure_markdown(text)
+    text = _ensure_markdown(text)
+
+    # Retrieve video recommendations if enabled and vector stores are available
+    video_recommendations: List[VideoRecommendation] = []
+    if include_video_recommendations and category:
+        try:
+            from .indexing import query_hosted_vector_store
+
+            chunks = query_hosted_vector_store(
+                channel_alias, question, category, top_k=rag_top_k
+            )
+            video_recommendations = _build_video_recommendations(chunks)
+        except Exception as e:
+            # Log error to stderr but don't fail the entire agent response
+            import sys
+
+            print(
+                f"WARNING: Could not retrieve video recommendations: {e}",
+                file=sys.stderr,
+            )
+
+    return AgentResponse(
+        response_text=text,
+        category=category,
+        video_recommendations=video_recommendations,
+    )
 
 
 def summarize_for_header(text: str, max_chars: int = 120) -> str:

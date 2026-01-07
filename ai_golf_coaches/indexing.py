@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import faiss  # type: ignore
 import numpy as np
+from openai import OpenAI
 from pydantic import BaseModel
 
 from .config import AppSettings, load_channels_config, resolve_channel_key
@@ -30,6 +31,7 @@ class IndexedChunk(BaseModel):
         title (str | None): Video title from catalog.
         is_livestream (bool): Whether the video is/was a livestream.
         channel_key (str): Canonical channel key.
+        score (float | None): Similarity score from vector search (0.0-1.0), if available.
 
     """
 
@@ -40,6 +42,7 @@ class IndexedChunk(BaseModel):
     title: Optional[str] = None
     is_livestream: bool = False
     channel_key: str
+    score: Optional[float] = None
 
 
 class HostedLongformLine(BaseModel):
@@ -181,14 +184,6 @@ def _openai_embed_batch(texts: List[str], model: str, api_key: str) -> np.ndarra
         np.ndarray: Array of shape (N, D) of embeddings.
 
     """
-    # Lazy import to avoid mandatory dependency if using local models later
-    try:
-        from openai import OpenAI  # type: ignore
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError(
-            "OpenAI client not available; install 'openai' package"
-        ) from e
-
     client = OpenAI(api_key=api_key)
     resp = client.embeddings.create(model=model, input=texts)
     vecs: List[List[float]] = [d.embedding for d in resp.data]
@@ -446,6 +441,80 @@ def _write_all_category_text_files(
     return written, missing
 
 
+def _clear_vector_store_files(client: OpenAI, vector_store_id: str) -> None:
+    """Delete all files from an existing vector store.
+
+    Args:
+        client: OpenAI client instance.
+        vector_store_id (str): ID of the vector store to clear.
+
+    Returns:
+        None
+
+    """
+    print(f"  Clearing existing files from vector store {vector_store_id}")
+    try:
+        # List all files in the vector store
+        files = client.beta.vector_stores.files.list(vector_store_id=vector_store_id)
+        file_ids = [f.id for f in files.data]
+
+        if not file_ids:
+            print("    No existing files to clear")
+            return
+
+        print(f"    Deleting {len(file_ids)} existing file(s)...")
+        for file_id in file_ids:
+            try:
+                client.beta.vector_stores.files.delete(
+                    vector_store_id=vector_store_id,
+                    file_id=file_id,
+                )
+            except Exception as e:
+                print(f"    Warning: Failed to delete file {file_id}: {e}")
+
+        print(f"    ✓ Cleared {len(file_ids)} file(s) from vector store")
+    except Exception as e:
+        print(f"    Warning: Failed to clear vector store files: {e}")
+
+
+def _get_or_create_vector_store(
+    client: OpenAI, channel_key: str, category: str, existing_store_id: Optional[str]
+) -> str:
+    """Get existing vector store or create a new one, clearing old files if exists.
+
+    Args:
+        client: OpenAI client instance.
+        channel_key (str): Channel identifier (e.g., 'elitegolfschools').
+        category (str): Category name (e.g., 'full_swing', 'all').
+        existing_store_id (str | None): Existing vector store ID from config (or None).
+
+    Returns:
+        str: Vector store ID (existing or newly created).
+
+    """
+    store_name = f"aigolfcoaches-{channel_key}-longform-{category}"
+
+    # If we have an existing store ID, verify it exists and clear it
+    if existing_store_id:
+        try:
+            print(f"  Checking existing vector store: {existing_store_id}")
+            store = client.beta.vector_stores.retrieve(existing_store_id)
+            print(f"    ✓ Found existing store '{store.name}'")
+            _clear_vector_store_files(client, existing_store_id)
+            return existing_store_id
+        except Exception as e:
+            print(
+                f"    Warning: Existing store {existing_store_id} not found or inaccessible: {e}"
+            )
+            print("    Creating new vector store instead...")
+
+    # Create new vector store
+    print(f"  Creating new vector store: {store_name}")
+    vector_store = client.beta.vector_stores.create(name=store_name)
+    print(f"    ✓ Created vector store: {vector_store.id}")
+    return str(vector_store.id)
+
+
 def build_hosted_vector_stores_longform(
     channel: str,
     categories: Optional[List[str]] = None,
@@ -461,6 +530,9 @@ def build_hosted_vector_stores_longform(
     Optionally creates an 'all' catch-all store containing all transcript chunks
     regardless of category, intended for RAG retrieval fallback (NOT for static
     context, which would exceed 128k token limits).
+
+    Reuses existing vector stores from config if available, clearing old files
+    before uploading new ones. This makes the ingestion idempotent and safe to re-run.
 
     This function uses the app-owned OpenAI key from environment (AppSettings)
     and is intended to be run as an offline ingestion step.
@@ -499,6 +571,17 @@ def build_hosted_vector_stores_longform(
             f"No constant_context_videos categories configured for channel '{channel_key}'."
         )
 
+    # Load existing vector store IDs from config
+    existing_stores: Dict[str, str] = {}
+    if "vector_store_ids" in entry:
+        longform_ids = entry["vector_store_ids"].get("longform", {})
+        if isinstance(longform_ids, dict):
+            existing_stores = {k: v for k, v in longform_ids.items() if v}
+            if existing_stores:
+                print(
+                    f"Found {len(existing_stores)} existing vector store(s) in config"
+                )
+
     selected_categories = categories or sorted(cat_map.keys())
     selected_categories = [
         c.strip().lower().replace(" ", "_") for c in selected_categories
@@ -520,6 +603,8 @@ def build_hosted_vector_stores_longform(
         if not vids:
             continue
 
+        print(f"\nBuilding vector store for category: {cat}")
+
         # Write text files to upload
         part_paths, missing = _write_category_text_files(
             root=root,
@@ -534,22 +619,35 @@ def build_hosted_vector_stores_longform(
         if not part_paths:
             continue
 
-        # Create vector store
-        store_name = f"aigolfcoaches-{channel_key}-longform-{cat}"
-        vector_store = client.beta.vector_stores.create(name=store_name)
-        vs_id = str(vector_store.id)
+        # Get or create vector store (clearing old files if exists)
+        existing_id = existing_stores.get(cat)
+        vs_id = _get_or_create_vector_store(
+            client=client,
+            channel_key=channel_key,
+            category=cat,
+            existing_store_id=existing_id,
+        )
         vs_ids[cat] = vs_id
 
         # Upload parts
-        for p in part_paths:
+        print(f"  Uploading {len(part_paths)} file(s)...")
+        for i, p in enumerate(part_paths, 1):
+            print(f"    Uploading part {i}/{len(part_paths)}: {p.name}")
             with p.open("rb") as fh:
                 client.beta.vector_stores.files.upload_and_poll(
                     vector_store_id=vs_id,
                     file=fh,
                 )
 
+        if existing_id and existing_id == vs_id:
+            print(f"  ✓ {cat}: {vs_id} (reused and refreshed)")
+        else:
+            print(f"  ✓ {cat}: {vs_id} (newly created)")
+
     # Build "all" catch-all store if requested (for RAG fallback, NOT static context)
     if build_all_store:
+        print("\nBuilding 'all' catch-all vector store")
+
         part_paths_all, missing_all = _write_all_category_text_files(
             root=root,
             channel_key=channel_key,
@@ -559,17 +657,29 @@ def build_hosted_vector_stores_longform(
         missing_by_cat["all"] = missing_all
 
         if part_paths_all:
-            store_name_all = f"aigolfcoaches-{channel_key}-longform-all"
-            vector_store_all = client.beta.vector_stores.create(name=store_name_all)
-            vs_id_all = str(vector_store_all.id)
+            # Get or create vector store (clearing old files if exists)
+            existing_id_all = existing_stores.get("all")
+            vs_id_all = _get_or_create_vector_store(
+                client=client,
+                channel_key=channel_key,
+                category="all",
+                existing_store_id=existing_id_all,
+            )
             vs_ids["all"] = vs_id_all
 
-            for p in part_paths_all:
+            print(f"  Uploading {len(part_paths_all)} file(s)...")
+            for i, p in enumerate(part_paths_all, 1):
+                print(f"    Uploading part {i}/{len(part_paths_all)}: {p.name}")
                 with p.open("rb") as fh:
                     client.beta.vector_stores.files.upload_and_poll(
                         vector_store_id=vs_id_all,
                         file=fh,
                     )
+
+            if existing_id_all and existing_id_all == vs_id_all:
+                print(f"  ✓ all: {vs_id_all} (reused and refreshed)")
+            else:
+                print(f"  ✓ all: {vs_id_all} (newly created)")
 
     return vs_ids, missing_by_cat
 
@@ -644,6 +754,176 @@ def build_faiss_index(
 
     faiss.write_index(index, str(idx_paths.faiss_path))
     return total, idx_paths.faiss_path, idx_paths.meta_path
+
+
+def query_hosted_vector_store(
+    channel: str,
+    question: str,
+    category: str,
+    top_k: int = 20,
+) -> List[IndexedChunk]:
+    """Query an OpenAI-hosted vector store for relevant transcript chunks.
+
+    This function uses the OpenAI Assistants API with the file_search tool to
+    retrieve semantically relevant chunks from a category-specific vector store.
+    The app pays for retrieval costs using OPENAI__API_KEY_STORAGE_INDEX.
+
+    Args:
+        channel (str): Alias, handle, or canonical key for the channel.
+        question (str): Natural language question from the user.
+        category (str): Category key (e.g., "full_swing", "putting").
+        top_k (int): Maximum number of results to return (default 20).
+
+    Returns:
+        List[IndexedChunk]: Retrieved chunks with parsed metadata.
+
+    Raises:
+        RuntimeError: If channel not found, API key missing, or vector store not configured.
+
+    """
+    import re
+
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError(
+            "OpenAI client not available; install 'openai' package"
+        ) from e
+
+    # Get storage API key (app pays for RAG)
+    storage_api_key = os.getenv("OPENAI__API_KEY_STORAGE_INDEX")
+    if not storage_api_key:
+        raise RuntimeError(
+            "OPENAI__API_KEY_STORAGE_INDEX not configured. Cannot query vector stores."
+        )
+
+    # Resolve channel
+    root = Path(__file__).resolve().parent.parent
+    channels_yaml = Path(root / "config" / "channels.yaml")
+    channels = load_channels_config(channels_yaml)
+    key = resolve_channel_key(channel, channels)
+    if not key:
+        raise RuntimeError("Channel not found for provided alias/handle.")
+
+    # Get vector store ID for category
+    channel_entry = channels.get(key, {})
+    vs_ids = channel_entry.get("vector_store_ids", {}).get("longform", {})
+    vector_store_id = vs_ids.get(category, "")
+
+    if not vector_store_id:
+        raise RuntimeError(
+            f"No vector store configured for channel '{key}' category '{category}'. "
+            f"Run 'aig build-vector-stores {key}' first."
+        )
+
+    client = OpenAI(api_key=storage_api_key)
+
+    # Create temporary assistant with file_search tool
+    assistant = client.beta.assistants.create(
+        name="Golf Coach RAG",
+        instructions="You retrieve relevant golf instruction content.",
+        model="gpt-4o-mini",  # Cheapest model for retrieval
+        tools=[{"type": "file_search"}],
+        tool_resources={"file_search": {"vector_store_ids": [vector_store_id]}},
+    )
+
+    try:
+        # Create thread with user question
+        thread = client.beta.threads.create(
+            messages=[{"role": "user", "content": question}]
+        )
+
+        # Create run with max_num_results override
+        run = client.beta.threads.runs.create_and_poll(
+            thread_id=thread.id,
+            assistant_id=assistant.id,
+            tools=[
+                {
+                    "type": "file_search",
+                    "file_search": {"max_num_results": top_k},
+                }
+            ],
+        )
+
+        # Retrieve run steps to get file_search results
+        steps = client.beta.threads.runs.steps.list(
+            thread_id=thread.id,
+            run_id=run.id,
+            include=["step_details.tool_calls[*].file_search.results[*].content"],
+        )
+
+        # Extract chunks from file_search results
+        chunks: List[IndexedChunk] = []
+        seen_chunks: set = set()  # Deduplicate by (video_id, start) tuple
+
+        # Match metadata anywhere in the text, not just at the beginning
+        metadata_pattern = re.compile(
+            r"\[channel=(?P<channel>\w+) "
+            r"category=(?P<category>\w+) "
+            r"video_id=(?P<video_id>[\w\-_]+) "
+            r"start=(?P<start>[\d.]+) "
+            r"end=(?P<end>[\d.]+) "
+            r"livestream=(?P<livestream>true|false) "
+            r'title="(?P<title>[^"]*)"\](?:\s+(?P<text>[^\[]+))?',
+            re.MULTILINE,
+        )
+
+        for step in steps.data:
+            if not hasattr(step.step_details, "tool_calls"):
+                continue
+
+            for tool_call in step.step_details.tool_calls:
+                if tool_call.type != "file_search":
+                    continue
+                if not hasattr(tool_call, "file_search"):
+                    continue
+                if not hasattr(tool_call.file_search, "results"):
+                    continue
+
+                for result in tool_call.file_search.results:
+                    if not hasattr(result, "content"):
+                        continue
+
+                    # Extract score from result (if available)
+                    result_score = getattr(result, "score", None)
+
+                    for content_item in result.content:
+                        if not hasattr(content_item, "text"):
+                            continue
+
+                        # Find all metadata matches in the text snippet
+                        for match in metadata_pattern.finditer(content_item.text):
+                            video_id = match.group("video_id")
+                            start = float(match.group("start"))
+
+                            # Deduplicate chunks
+                            chunk_key = (video_id, start)
+                            if chunk_key in seen_chunks:
+                                continue
+                            seen_chunks.add(chunk_key)
+
+                            # Extract text after metadata (if present)
+                            text = match.group("text") if match.group("text") else ""
+
+                            chunks.append(
+                                IndexedChunk(
+                                    text=text.strip(),
+                                    video_id=video_id,
+                                    start=start,
+                                    end=float(match.group("end")),
+                                    title=match.group("title") or None,
+                                    is_livestream=match.group("livestream") == "true",
+                                    channel_key=match.group("channel"),
+                                    score=result_score,
+                                )
+                            )
+
+        return chunks
+
+    finally:
+        # Clean up temporary assistant
+        with contextlib.suppress(Exception):
+            client.beta.assistants.delete(assistant.id)
 
 
 def query_index(

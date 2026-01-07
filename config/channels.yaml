@@ -4,7 +4,7 @@ elitegolfschools:
   channel_id: "UCePCyXFuu_B-8bPuY-cvn4Q"
   vector_store_ids:
     longform:
-      all: vs_695d6e3ee54881918d4d5c276329d71e  # Catch-all store for RAG fallback (NOT for static context)
+      all: vs_695e57822f98819190a6947544a16c24  # Catch-all store for RAG fallback (NOT for static context)
       ball_control: vs_695d6e00d87881918c74efd73f04630c
       dynamic_exercises: vs_695d6e0b8d908191868065dd65a9fdfa
       full_swing: vs_695d6e191bb08191ad9b7002fda0650e
