@@ -8,8 +8,10 @@ from typing import Dict, List
 import streamlit as st
 
 from ai_golf_coaches.agent import (
+    AgentResponse,
     _build_messages,  # reuse to mirror agent prompt construction
     _clip_text_to_tokens,  # reuse to mirror agent context clipping
+    _format_video_recommendations,
     run_agent,
     summarize_for_header,
 )
@@ -316,7 +318,7 @@ def _show_welcome_screen() -> bool:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         if logo_path.exists():
-            st.image(str(logo_path), width="content")
+            st.image(str(logo_path), use_container_width=True)
         else:
             st.markdown(
                 "<h1 style='text-align: center;'>🏌️ AI Golf Coach</h1>",
@@ -515,7 +517,9 @@ def _show_welcome_screen() -> bool:
     # Dismiss button
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
-        if st.button("I am ready to start ⛳", width="content", type="primary"):
+        if st.button(
+            "I am ready to start ⛳", use_container_width=True, type="primary"
+        ):
             st.session_state["welcome_dismissed"] = True
             st.session_state["show_help"] = False
             st.rerun()
@@ -570,7 +574,10 @@ def main() -> None:
         / "assets"
         / "logo_small.png"
     )
-    st.logo(logo_path, icon_image=logo_path, size="large")
+    # `st.logo()` can be a bit noisy with reruns in some environments.
+    # Use a simple sidebar image instead.
+    if logo_path.exists():
+        st.sidebar.image(str(logo_path), use_container_width=True)
 
     # Initialize session state for API key input
     if "pending_openai_key" not in st.session_state:
@@ -817,30 +824,44 @@ def main() -> None:
         # Call agent with pre-classified category and selected model
         with st.chat_message("assistant", avatar=_assistant_avatar(channel)):
             try:
-                reply = run_agent(
+                agent_result = run_agent(
                     channel, prompt, category=question_category, model=selected_model
                 )
             except Exception as e:  # display-friendly error
-                reply = (
+                agent_result = (
                     f"**Error:** {type(e).__name__}: {e}\n\n"
                     "- Paste your OpenAI API key in the sidebar.\n"
                     "- If the model is unavailable, update ai_golf_coaches/agent.py to a supported model (e.g., gpt-4o)."
                 )
+
+            reply_text: str
+            if isinstance(agent_result, AgentResponse):
+                reply_text = agent_result.response_text
+                if agent_result.video_recommendations:
+                    reply_text = (
+                        reply_text
+                        + "\n\n"
+                        + _format_video_recommendations(
+                            agent_result.video_recommendations
+                        )
+                    )
+            else:
+                reply_text = str(agent_result)
             try:
-                title = summarize_for_header(reply)
+                title = summarize_for_header(reply_text)
             except Exception:
-                title = _one_line_summary(reply)
+                title = _one_line_summary(reply_text)
             # Include category in header if available
             if question_category:
                 title = f"{title} (Category: {question_category})"
             with st.expander(title, expanded=True):
-                st.markdown(reply)
+                st.markdown(reply_text)
 
         # Save assistant message to history first
         st.session_state.messages.append(
             {
                 "role": "assistant",
-                "content": reply,
+                "content": reply_text,
                 "summary": title,
                 "channel": channel,
                 "category": question_category,
@@ -853,7 +874,7 @@ def main() -> None:
             channels = load_channels_config(_repo_root() / "config" / "channels.yaml")
             channel_key = resolve_channel_key(channel, channels) or channel
             st.session_state["last_token_usage"] = _compute_turn_token_usage(
-                channel_key, prompt, reply
+                channel_key, prompt, reply_text
             )
             # Accumulate session cost
             turn_cost = st.session_state["last_token_usage"].get("total_cost", 0.0)
