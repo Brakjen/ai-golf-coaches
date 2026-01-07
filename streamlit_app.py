@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
@@ -11,7 +12,6 @@ from ai_golf_coaches.agent import (
     AgentResponse,
     _build_messages,  # reuse to mirror agent prompt construction
     _clip_text_to_tokens,  # reuse to mirror agent context clipping
-    _format_video_recommendations,
     run_agent,
     summarize_for_header,
 )
@@ -31,6 +31,11 @@ MODEL_INFO = {
     "gpt-4o": "Balanced",
     "gpt-5": "Most Capable",
 }
+
+
+# Relevance thresholds (RAG similarity score 0..1)
+RELEVANCE_GREEN_MIN = 0.70
+RELEVANCE_YELLOW_MIN = 0.50
 
 
 def _repo_root() -> Path:
@@ -148,6 +153,253 @@ def _count_tokens(text: str) -> int:
     except Exception:
         enc = tiktoken.get_encoding("cl100k_base")
     return len(enc.encode(text or ""))
+
+
+def _youtube_embed_url(video_id: str, start_seconds: Optional[int] = None) -> str:
+    """Build a YouTube embed URL for a video and optional start time.
+
+    Args:
+        video_id (str): YouTube video ID.
+        start_seconds (int | None): Start time in seconds.
+
+    Returns:
+        str: Embed URL.
+
+    """
+    start_q = f"&start={int(start_seconds)}" if start_seconds is not None else ""
+    return (
+        f"https://www.youtube.com/embed/{video_id}"
+        f"?modestbranding=1&rel=0&playsinline=1{start_q}"
+    )
+
+
+def _youtube_watch_url(video_id: str, start_seconds: Optional[int] = None) -> str:
+    """Build a standard YouTube watch URL for a video and optional start time.
+
+    Args:
+        video_id (str): YouTube video ID.
+        start_seconds (int | None): Start time in seconds.
+
+    Returns:
+        str: Watch URL.
+
+    """
+    if start_seconds is not None and start_seconds >= 0:
+        return f"https://www.youtube.com/watch?v={video_id}&t={int(start_seconds)}s"
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def _relevance_indicator(score: Optional[float]) -> str:
+    """Return a compact relevance label for a score.
+
+    Thresholds:
+        - Green: >= 0.70
+        - Yellow: 0.50 - 0.69...
+        - Red: < 0.50
+
+    Args:
+        score (float | None): Similarity score.
+
+    Returns:
+        str: A short label like "🟢 0.82".
+
+    """
+    if score is None:
+        return "⚪ n/a"
+    s = float(score)
+    if s >= RELEVANCE_GREEN_MIN:
+        return f"🟢 {s:.2f}"
+    if s >= RELEVANCE_YELLOW_MIN:
+        return f"🟡 {s:.2f}"
+    return f"🔴 {s:.2f}"
+
+
+def _safe_get(obj: Any, key: str, default: Any = None) -> Any:
+    """Fetch a value from dict-like or attribute-like objects.
+
+    Args:
+        obj (Any): Object to read from.
+        key (str): Dict key or attribute name.
+        default (Any): Default if not found.
+
+    Returns:
+        Any: Value if present, else default.
+
+    """
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _normalize_video_recommendations(recs: Any) -> List[Dict[str, Any]]:
+    """Normalize agent video recommendations into a renderer-friendly structure.
+
+    Produces:
+        [
+          {
+            "video_id": str,
+            "title": str | None,
+            "segments": [
+               {"start_seconds": int, "end_seconds": int | None, "score": float | None}
+            ]
+          },
+          ...
+        ]
+
+    Accepts pydantic objects or dicts.
+
+    Args:
+        recs (Any): AgentResponse.video_recommendations-like value.
+
+    Returns:
+        List[Dict[str, Any]]: Normalized list.
+
+    """
+    if not recs:
+        return []
+
+    items: List[Any] = recs if isinstance(recs, list) else [recs]
+    out: List[Dict[str, Any]] = []
+
+    for rec in items:
+        video_id = _safe_get(rec, "video_id")
+        if not video_id:
+            continue
+        title = _safe_get(rec, "title")
+
+        raw_segments = _safe_get(rec, "segments") or []
+        segments_out: List[Dict[str, Any]] = []
+        if isinstance(raw_segments, list):
+            for seg in raw_segments:
+                start_val = _safe_get(seg, "start_seconds")
+                end_val = _safe_get(seg, "end_seconds")
+                score_val = (
+                    _safe_get(seg, "avg_relevance_score")
+                    if _safe_get(seg, "avg_relevance_score") is not None
+                    else _safe_get(seg, "score")
+                )
+
+                try:
+                    start_seconds = (
+                        int(float(start_val)) if start_val is not None else 0
+                    )
+                except Exception:
+                    start_seconds = 0
+                try:
+                    end_seconds = int(float(end_val)) if end_val is not None else None
+                except Exception:
+                    end_seconds = None
+                try:
+                    score = float(score_val) if score_val is not None else None
+                except Exception:
+                    score = None
+
+                segments_out.append(
+                    {
+                        "start_seconds": max(0, start_seconds),
+                        "end_seconds": end_seconds,
+                        "score": score,
+                    }
+                )
+
+        # Sort best-first; None scores last
+        segments_out.sort(
+            key=lambda x: (
+                -(x["score"] if x["score"] is not None else -1.0),
+                x["start_seconds"],
+            )
+        )
+
+        out.append({"video_id": video_id, "title": title, "segments": segments_out})
+
+    return out
+
+
+def _video_relevance_score(segments: List[Dict[str, Any]]) -> Optional[float]:
+    """Compute a single relevance score for a video from its segment scores.
+
+    We still want to leverage segment-level similarity without showing timestamps.
+    A simple and robust proxy is the max score across all matched segments.
+
+    Note:
+        Segment objects may provide `avg_relevance_score`; during normalization we map
+        that value into the segment's `score` field.
+
+    Args:
+        segments (List[Dict[str, Any]]): Normalized segments with optional `score`.
+
+    Returns:
+        Optional[float]: Best segment score, or None if no valid scores exist.
+
+    """
+    scores: List[float] = [
+        float(seg["score"]) for seg in segments if seg.get("score") is not None
+    ]
+    if not scores:
+        return None
+    return max(scores)
+
+
+def _render_video_recommendations(
+    video_recommendations: Any, *, message_id: str
+) -> None:
+    """Render embedded videos with clickable timestamp buttons inside the expander.
+
+    Notes:
+        Timestamp-based seeking (via buttons) was intentionally removed because it
+        felt slow/fiddly due to iframe reloads in Streamlit. We instead embed the
+        recommended videos and show a per-video relevance indicator derived from
+        segment scores.
+
+    Args:
+        video_recommendations (Any): Raw recommendations from AgentResponse.
+        message_id (str): Stable id for this assistant message.
+
+    Returns:
+        None
+
+    """
+    normalized = _normalize_video_recommendations(video_recommendations)
+    if not normalized:
+        return
+
+    st.markdown("### Watch")
+    st.caption("Relevance: 🟢 ≥ 0.70, 🟡 0.50–0.69, 🔴 < 0.50.")
+
+    for rec in normalized:
+        video_id: str = rec["video_id"]
+        title: str = rec.get("title") or f"Video {video_id}"
+        segments: List[Dict[str, Any]] = rec.get("segments") or []
+
+        video_score = _video_relevance_score(segments)
+
+        cols = st.columns([5, 2])
+        with cols[0]:
+            st.subheader(title)
+        with cols[1]:
+            st.link_button(
+                "Open on YouTube",
+                _youtube_watch_url(video_id, start_seconds=None),
+                width="stretch",
+            )
+
+        st.caption(f"Relevance score: {_relevance_indicator(video_score)}")
+
+        embed_url = _youtube_embed_url(video_id, start_seconds=None)
+        st.markdown(
+            (
+                '<iframe width="100%" height="360" '
+                f'src="{embed_url}" '
+                'frameborder="0" allow="accelerometer; autoplay; '
+                "clipboard-write; encrypted-media; gyroscope; "
+                'picture-in-picture" allowfullscreen></iframe>'
+            ),
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("---")
 
 
 def _calculate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
@@ -318,7 +570,7 @@ def _show_welcome_screen() -> bool:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         if logo_path.exists():
-            st.image(str(logo_path), use_container_width=True)
+            st.image(str(logo_path), width="stretch")
         else:
             st.markdown(
                 "<h1 style='text-align: center;'>🏌️ AI Golf Coach</h1>",
@@ -517,9 +769,7 @@ def _show_welcome_screen() -> bool:
     # Dismiss button
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
-        if st.button(
-            "I am ready to start ⛳", use_container_width=True, type="primary"
-        ):
+        if st.button("I am ready to start ⛳", width="stretch", type="primary"):
             st.session_state["welcome_dismissed"] = True
             st.session_state["show_help"] = False
             st.rerun()
@@ -535,7 +785,7 @@ def _avatar_capture_dialog() -> None:
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Save", use_container_width=True, type="primary"):
+        if st.button("Save", width="stretch", type="primary"):
             if captured is not None:
                 try:
                     path = _save_avatar_image(captured.getvalue())
@@ -547,7 +797,7 @@ def _avatar_capture_dialog() -> None:
             else:
                 st.warning("Capture a photo first")
     with col2:
-        if st.button("Cancel", use_container_width=True, type="secondary"):
+        if st.button("Cancel", width="stretch", type="secondary"):
             st.rerun()
 
 
@@ -577,7 +827,7 @@ def main() -> None:
     # `st.logo()` can be a bit noisy with reruns in some environments.
     # Use a simple sidebar image instead.
     if logo_path.exists():
-        st.sidebar.image(str(logo_path), use_container_width=True)
+        st.sidebar.image(str(logo_path), width="stretch")
 
     # Initialize session state for API key input
     if "pending_openai_key" not in st.session_state:
@@ -609,9 +859,9 @@ def main() -> None:
                 placeholder="Enter API key...",
             )
         with api_col2:
-            set_clicked = st.button("Set", use_container_width=True)
+            set_clicked = st.button("Set", width="stretch")
         if st.button(
-            "Clear", use_container_width=True, on_click=clear_api_key, type="secondary"
+            "Clear", width="stretch", on_click=clear_api_key, type="secondary"
         ):
             pass
 
@@ -673,13 +923,13 @@ def main() -> None:
         # Avatar controls
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("📸 Photo", use_container_width=True, help="Capture avatar"):
+            if st.button("📸 Photo", width="stretch", help="Capture avatar"):
                 _avatar_capture_dialog()
         with col2:
-            if st.button("Reset", use_container_width=True, type="secondary"):
+            if st.button("Reset", width="stretch", type="secondary"):
                 st.session_state.pop("user_avatar_path", None)
         with col3:
-            if st.button("📖 Info", use_container_width=True, type="secondary"):
+            if st.button("📖 Info", width="stretch", type="secondary"):
                 st.session_state["show_help"] = True
                 st.rerun()
 
@@ -687,6 +937,81 @@ def main() -> None:
     if not st.session_state.get("openai_api_key"):
         st.info("Add your OpenAI API key in the sidebar to start.")
         return
+
+    # Process a queued prompt (so new messages render above the input).
+    had_pending_prompt: bool = "pending_prompt" in st.session_state
+    pending_prompt: Optional[str] = st.session_state.pop("pending_prompt", None)
+    if pending_prompt:
+        st.session_state.messages.append({"role": "user", "content": pending_prompt})
+
+        # Classify question first to avoid duplicate calls
+        from ai_golf_coaches.classifier import classify_question_category
+
+        try:
+            pred = classify_question_category(pending_prompt, channel_alias=channel)
+            question_category = pred.category
+        except Exception:
+            question_category = None
+
+        with st.spinner("Thinking..."):
+            try:
+                agent_result = run_agent(
+                    channel,
+                    pending_prompt,
+                    category=question_category,
+                    model=selected_model,
+                )
+            except Exception as e:  # display-friendly error
+                agent_result = (
+                    f"**Error:** {type(e).__name__}: {e}\n\n"
+                    "- Paste your OpenAI API key in the sidebar.\n"
+                    "- If the model is unavailable, update ai_golf_coaches/agent.py to a supported model (e.g., gpt-4o)."
+                )
+
+        reply_text: str
+        video_recs: Any = None
+        if isinstance(agent_result, AgentResponse):
+            reply_text = agent_result.response_text
+            video_recs = [vr.model_dump() for vr in agent_result.video_recommendations]
+        else:
+            reply_text = str(agent_result)
+
+        try:
+            title = summarize_for_header(reply_text)
+        except Exception:
+            title = _one_line_summary(reply_text)
+
+        if question_category:
+            title = f"{title} (Category: {question_category})"
+
+        message_id: str = str(uuid.uuid4())
+        st.session_state.messages.append(
+            {
+                "id": message_id,
+                "role": "assistant",
+                "content": reply_text,
+                "summary": title,
+                "channel": channel,
+                "category": question_category,
+                "video_recommendations": video_recs,
+            }
+        )
+
+        # After saving, compute and display token usage for this turn
+        try:
+            channels = load_channels_config(_repo_root() / "config" / "channels.yaml")
+            channel_key = resolve_channel_key(channel, channels) or channel
+            st.session_state["last_token_usage"] = _compute_turn_token_usage(
+                channel_key, pending_prompt, reply_text
+            )
+            turn_cost = st.session_state["last_token_usage"].get("total_cost", 0.0)
+            st.session_state["cumulative_cost"] = (
+                st.session_state.get("cumulative_cost", 0.0) + turn_cost
+            )
+            _render_context_meter(_meter_ph, st.session_state.get("last_token_usage"))
+            _render_session_cost(_cost_ph, st.session_state["cumulative_cost"])
+        except Exception:
+            pass
 
     # Chat history
     if "messages" not in st.session_state:
@@ -722,171 +1047,106 @@ def main() -> None:
                 if cat and f"(Category: {cat})" not in title:
                     title = f"{title} (Category: {cat})"
                 with st.expander(title, expanded=(i == last_assistant_idx)):
-                    st.markdown(msg["content"])  # nosec - display only
+                    tab_answer, tab_videos = st.tabs(["Answer", "Videos"])
+                    with tab_answer:
+                        st.markdown(msg["content"])  # nosec - display only
+                    with tab_videos:
+                        _render_video_recommendations(
+                            msg.get("video_recommendations"),
+                            message_id=str(msg.get("id") or f"idx_{i}"),
+                        )
             else:
                 st.markdown(msg["content"])  # nosec - display only
 
-    # Input section at bottom - either show transcription editor or normal chat input
-    if (
-        "pending_transcription" in st.session_state
-        and st.session_state["pending_transcription"]
-    ):
-        # Show editable transcription with Send/Cancel buttons
-        st.markdown("---")
-        transcribed = st.text_area(
-            "Edit transcription if needed:",
-            value=st.session_state["pending_transcription"],
-            height=100,
-            key="transcription_editor",
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✓ Send", use_container_width=True, type="primary"):
-                prompt = transcribed.strip()
-                st.session_state.pop("pending_transcription", None)
-                st.session_state.pop("voice_input", None)
-                # Will process below
-            else:
-                prompt = None
-        with col2:
-            if st.button("✕ Cancel", use_container_width=True, type="secondary"):
-                st.session_state.pop("pending_transcription", None)
-                st.session_state.pop("voice_input", None)
-                st.rerun()
-    else:
-        # Normal input: chat input + audio button
-        col1, col2 = st.columns([20, 1])
-        with col1:
-            prompt = st.chat_input("Ask your golf question...")
-        with col2:
-            audio_input = st.audio_input(
-                "🎤", label_visibility="collapsed", key="voice_input"
+    # Input section at bottom - either show transcription editor or normal chat input.
+    # When processing a queued prompt (had_pending_prompt), we hide the input row
+    # entirely to avoid duplicated/grayed-out controls while the response is pending.
+    prompt: Optional[str] = None
+    if not had_pending_prompt:
+        if (
+            "pending_transcription" in st.session_state
+            and st.session_state["pending_transcription"]
+        ):
+            # Show editable transcription with Send/Cancel buttons
+            st.markdown("---")
+            transcribed = st.text_area(
+                "Edit transcription if needed:",
+                value=st.session_state["pending_transcription"],
+                height=100,
+                key="transcription_editor",
             )
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("✓ Send", width="stretch", type="primary"):
+                    prompt = transcribed.strip()
+                    st.session_state.pop("pending_transcription", None)
+                    st.session_state.pop("voice_input", None)
+                    if prompt:
+                        st.session_state["pending_prompt"] = prompt
+                        st.rerun()
+            with col2:
+                if st.button("✕ Cancel", width="stretch", type="secondary"):
+                    st.session_state.pop("pending_transcription", None)
+                    st.session_state.pop("voice_input", None)
+                    st.rerun()
+        else:
+            # Normal input: chat input + audio button
+            col1, col2 = st.columns([20, 1])
+            with col1:
+                prompt = st.chat_input("Ask your golf question...")
+            with col2:
+                audio_input = st.audio_input(
+                    "🎤", label_visibility="collapsed", key="voice_input"
+                )
 
-        # Process audio transcription if provided
-        if audio_input is not None:
-            try:
-                from openai import OpenAI
+            # Process audio transcription if provided
+            if audio_input is not None:
+                try:
+                    from openai import OpenAI
 
-                with st.spinner("🎧 Transcribing..."):
-                    client = OpenAI(api_key=st.session_state.get("openai_api_key"))
+                    with st.spinner("🎧 Transcribing..."):
+                        client = OpenAI(api_key=st.session_state.get("openai_api_key"))
 
-                    # Save audio bytes to temporary file for Whisper API
-                    import tempfile
+                        # Save audio bytes to temporary file for Whisper API
+                        import tempfile
 
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".wav", delete=False
-                    ) as tmp_file:
-                        tmp_file.write(audio_input.getvalue())
-                        tmp_file_path = tmp_file.name
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".wav", delete=False
+                        ) as tmp_file:
+                            tmp_file.write(audio_input.getvalue())
+                            tmp_file_path = tmp_file.name
 
-                    try:
-                        with open(tmp_file_path, "rb") as audio_file:
-                            transcript = client.audio.transcriptions.create(
-                                model="whisper-1",
-                                file=audio_file,
-                                language="en",
-                            )
+                        try:
+                            with open(tmp_file_path, "rb") as audio_file:
+                                transcript = client.audio.transcriptions.create(
+                                    model="whisper-1",
+                                    file=audio_file,
+                                    language="en",
+                                )
 
-                        transcribed_text = transcript.text.strip()
-                        if transcribed_text:
-                            # Store transcription for user review
-                            st.session_state["pending_transcription"] = transcribed_text
-                            st.rerun()
-                        else:
-                            st.warning("⚠️ No speech detected")
-                    finally:
-                        # Clean up temporary file
-                        import os as _os
+                            transcribed_text = transcript.text.strip()
+                            if transcribed_text:
+                                # Store transcription for user review
+                                st.session_state["pending_transcription"] = (
+                                    transcribed_text
+                                )
+                                st.rerun()
+                            else:
+                                st.warning("⚠️ No speech detected")
+                        finally:
+                            # Clean up temporary file
+                            import os as _os
 
-                        if _os.path.exists(tmp_file_path):
-                            _os.unlink(tmp_file_path)
-            except Exception as e:
-                st.error(f"⚠️ Transcription failed: {type(e).__name__}: {e}")
+                            if _os.path.exists(tmp_file_path):
+                                _os.unlink(tmp_file_path)
+                except Exception as e:
+                    st.error(f"⚠️ Transcription failed: {type(e).__name__}: {e}")
 
+    # If a prompt was entered in the chat input, queue it and rerun so the
+    # new messages render above the input widget.
     if prompt:
-        # Show user message
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        user_custom = st.session_state.get("user_avatar_path")
-        user_avatar = user_custom if user_custom else "👤"
-        with st.chat_message("user", avatar=user_avatar):
-            st.markdown(prompt)
-
-        # Classify question first to avoid duplicate calls
-        from ai_golf_coaches.classifier import classify_question_category
-
-        try:
-            pred = classify_question_category(prompt, channel_alias=channel)
-            question_category = pred.category
-        except Exception:
-            question_category = None
-
-        # Call agent with pre-classified category and selected model
-        with st.chat_message("assistant", avatar=_assistant_avatar(channel)):
-            try:
-                agent_result = run_agent(
-                    channel, prompt, category=question_category, model=selected_model
-                )
-            except Exception as e:  # display-friendly error
-                agent_result = (
-                    f"**Error:** {type(e).__name__}: {e}\n\n"
-                    "- Paste your OpenAI API key in the sidebar.\n"
-                    "- If the model is unavailable, update ai_golf_coaches/agent.py to a supported model (e.g., gpt-4o)."
-                )
-
-            reply_text: str
-            if isinstance(agent_result, AgentResponse):
-                reply_text = agent_result.response_text
-                if agent_result.video_recommendations:
-                    reply_text = (
-                        reply_text
-                        + "\n\n"
-                        + _format_video_recommendations(
-                            agent_result.video_recommendations
-                        )
-                    )
-            else:
-                reply_text = str(agent_result)
-            try:
-                title = summarize_for_header(reply_text)
-            except Exception:
-                title = _one_line_summary(reply_text)
-            # Include category in header if available
-            if question_category:
-                title = f"{title} (Category: {question_category})"
-            with st.expander(title, expanded=True):
-                st.markdown(reply_text)
-
-        # Save assistant message to history first
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": reply_text,
-                "summary": title,
-                "channel": channel,
-                "category": question_category,
-            }
-        )
-
-        # After saving, compute and display token usage for this turn without rerun
-        try:
-            # Resolve canonical channel key for accurate config lookup
-            channels = load_channels_config(_repo_root() / "config" / "channels.yaml")
-            channel_key = resolve_channel_key(channel, channels) or channel
-            st.session_state["last_token_usage"] = _compute_turn_token_usage(
-                channel_key, prompt, reply_text
-            )
-            # Accumulate session cost
-            turn_cost = st.session_state["last_token_usage"].get("total_cost", 0.0)
-            st.session_state["cumulative_cost"] = (
-                st.session_state.get("cumulative_cost", 0.0) + turn_cost
-            )
-            # Update both context meter and session cost displays
-            _render_context_meter(_meter_ph, st.session_state.get("last_token_usage"))
-            _render_session_cost(_cost_ph, st.session_state["cumulative_cost"])
-        except Exception:
-            # Best-effort; silently skip if counting fails
-            pass
+        st.session_state["pending_prompt"] = prompt
+        st.rerun()
 
 
 if __name__ == "__main__":
