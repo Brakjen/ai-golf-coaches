@@ -410,7 +410,7 @@ def _video_relevance_score(segments: List[Dict[str, Any]]) -> Optional[float]:
 
 
 def _render_video_recommendations(
-    video_recommendations: Any, *, rag_enabled: bool
+    video_recommendations: Any, *, rag_enabled: bool, **_kwargs: Any
 ) -> None:
     """Render embedded videos with clickable timestamp buttons inside the expander.
 
