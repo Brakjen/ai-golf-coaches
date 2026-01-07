@@ -133,3 +133,18 @@ Lets make a very simple function that takes in a question that gets passed to th
 I don't want special CLI options now.
 I don't want testing frameworks. By test I mean a very simple proof of concept that lets me ask an agent that has my special context.
 Lets hard code models and parameters for now to keep it simple.
+
+
+### ToDos
+- Use Elite Golf Schools for the long text responses
+- Use additional channels for video recommendations
+  - EGS Videos
+  - Milo Lines Videos
+  - Other channels?
+
+So, static context from EGS, RAG for other channels.
+
+
+- No RAG in deployed app
+- Duplicated buttons error
+- Spinning "thinking" wheel showing, instead of the question being immediately "posted" with the avatar.
