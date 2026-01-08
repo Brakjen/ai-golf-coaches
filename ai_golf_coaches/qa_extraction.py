@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Sequence, Set
 
+import pytz
 from pydantic import BaseModel, Field, ValidationError
 
 from .config import (
@@ -731,7 +732,7 @@ def extract_qa_for_video(
                 window_end=transcript_end,
                 model=model,
                 prompt_version=PROMPT_VERSION,
-                extracted_at=datetime.now(tz="utc"),
+                extracted_at=datetime.now(tz=pytz.utc),
             )
         )
 
