@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -85,6 +85,12 @@ class AppSettings(BaseSettings):
     youtube: YouTubeSettings
     proxy: ProxySettings = ProxySettings()
     openai: Optional[OpenAISettings] = None
+
+    if TYPE_CHECKING:
+
+        def __init__(self, **data: object) -> None:
+            """Type checker hint for BaseSettings runtime signature."""
+            ...
 
 
 def load_channels_config(config_path: Path | str) -> Dict[str, dict]:
