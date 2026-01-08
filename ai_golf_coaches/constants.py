@@ -27,3 +27,10 @@ SHORTS_THRESHOLD_SECONDS: int = 180  # Under 3 minutes considered a Short
 DEFAULT_EMBEDDING_PROVIDER: str = "openai"
 DEFAULT_OPENAI_EMBED_MODEL: str = "text-embedding-3-large"
 INDEX_DIR_NAME: str = "index"
+
+# QA extraction defaults
+QA_DEFAULT_WINDOW_SECONDS: float = 600.0
+QA_DEFAULT_OVERLAP_SECONDS: float = 60.0
+QA_DEFAULT_MAX_WINDOW_CHARS: int = 0
+QA_DEFAULT_MAX_OUTPUT_TOKENS: int = 6000
+QA_DEFAULT_WORKERS: int = 3

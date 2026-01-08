@@ -10,13 +10,22 @@ from typing import Optional, Tuple
 
 from .agent import _format_video_recommendations, run_agent
 from .config import AppSettings, load_channels_config, resolve_channel_key
-from .constants import COMBINE_DEFAULT_SECONDS, FETCH_MAX_WORKERS
+from .constants import (
+    COMBINE_DEFAULT_SECONDS,
+    FETCH_MAX_WORKERS,
+    QA_DEFAULT_MAX_OUTPUT_TOKENS,
+    QA_DEFAULT_MAX_WINDOW_CHARS,
+    QA_DEFAULT_OVERLAP_SECONDS,
+    QA_DEFAULT_WINDOW_SECONDS,
+    QA_DEFAULT_WORKERS,
+)
 from .indexing import (
     build_faiss_index,
     build_hosted_vector_stores_longform,
     query_hosted_vector_store,
     query_index,
 )
+from .qa_extraction import run_qa_extraction
 from .transcripts import combine_chunks, fetch_transcript_chunks, write_transcript_jsonl
 from .youtube_client import (
     fetch_channel_uploads_video_ids,
@@ -66,6 +75,28 @@ def _load_channel_id(channel_key: str) -> str:
             f"Channel '{channel_key}' missing or channel_id not configured in channels.yaml"
         )
     return str(entry["channel_id"])
+
+
+def _split_csv_args(values: Optional[list[str]]) -> Optional[list[str]]:
+    """Split comma-separated CLI args into a flat list.
+
+    Args:
+        values (Optional[list[str]]): Input values (possibly comma-separated).
+
+    Returns:
+        Optional[list[str]]: Flattened list or None if empty.
+
+    """
+    if not values:
+        return None
+    out: list[str] = []
+    for item in values:
+        parts = str(item).split(",")
+        for part in parts:
+            part = part.strip()
+            if part:
+                out.append(part)
+    return out or None
 
 
 def cmd_resolve(alias_or_key: str) -> int:
@@ -310,6 +341,139 @@ def build_parser() -> argparse.ArgumentParser:
             args.combine_seconds,
         )
     )
+
+    p_qa = sub.add_parser(
+        "extract-qa",
+        help="Extract question-answer pairs from livestream transcripts",
+    )
+    p_qa.add_argument("channel", help="Alias, handle, or canonical key")
+    p_qa.add_argument(
+        "--video-id",
+        action="append",
+        default=None,
+        help="Video ID to process (repeat or comma-separated)",
+    )
+    p_qa.add_argument(
+        "-l",
+        "--limit",
+        type=int,
+        default=None,
+        help="Max videos to process",
+    )
+    p_qa.add_argument(
+        "--include-non-livestreams",
+        action="store_true",
+        help="Include non-livestream videos",
+    )
+    p_qa.add_argument(
+        "--model",
+        type=str,
+        default="gpt-5",
+        help="OpenAI model name (default: gpt-5)",
+    )
+    p_qa.add_argument(
+        "--window-seconds",
+        type=float,
+        default=QA_DEFAULT_WINDOW_SECONDS,
+        help="Ignored in full-transcript mode (kept for compatibility)",
+    )
+    p_qa.add_argument(
+        "--overlap-seconds",
+        type=float,
+        default=QA_DEFAULT_OVERLAP_SECONDS,
+        help="Ignored in full-transcript mode (kept for compatibility)",
+    )
+    p_qa.add_argument(
+        "--max-window-chars",
+        type=int,
+        default=QA_DEFAULT_MAX_WINDOW_CHARS,
+        help="Max characters sent to the model (0 = no limit)",
+    )
+    p_qa.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=QA_DEFAULT_MAX_OUTPUT_TOKENS,
+        help=f"Max tokens to generate per window (default: {QA_DEFAULT_MAX_OUTPUT_TOKENS})",
+    )
+    p_qa.add_argument(
+        "--output-mode",
+        type=str,
+        default="per-video",
+        choices=["master", "per-video", "both"],
+        help="Output mode: per-video, master, or both (default: per-video)",
+    )
+    p_qa.add_argument(
+        "--append",
+        action="store_true",
+        help="Append to existing output files instead of overwriting",
+    )
+    p_qa.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip videos that already have QA outputs",
+    )
+    p_qa.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print plan without calling the LLM",
+    )
+    p_qa.add_argument(
+        "--max-windows",
+        type=int,
+        default=None,
+        help="Max transcript chunks to include (for quick tests)",
+    )
+    p_qa.add_argument(
+        "--workers",
+        type=int,
+        default=QA_DEFAULT_WORKERS,
+        help=f"Number of worker threads (default: {QA_DEFAULT_WORKERS})",
+    )
+    p_qa.add_argument(
+        "--debug",
+        action="store_true",
+        help="Write prompt and raw model output to data/<channel>/qa/debug",
+    )
+
+    def _cmd_extract_qa(args: argparse.Namespace) -> int:
+        """Run QA extraction for a channel based on CLI args.
+
+        Args:
+            args (argparse.Namespace): Parsed CLI arguments.
+
+        Returns:
+            int: Exit code (0 on success, non-zero on error).
+
+        """
+        if args.channel is None or str(args.channel).strip() == "":
+            print("Missing required argument: channel. Try: aig extract-qa <alias>")
+            return 2
+        video_ids = _split_csv_args(args.video_id)
+        try:
+            run_qa_extraction(
+                channel=args.channel,
+                video_ids=video_ids,
+                limit=args.limit,
+                include_non_livestreams=bool(args.include_non_livestreams),
+                model=args.model,
+                window_seconds=float(args.window_seconds),
+                overlap_seconds=float(args.overlap_seconds),
+                max_window_chars=int(args.max_window_chars),
+                max_output_tokens=int(args.max_output_tokens),
+                output_mode=str(args.output_mode),
+                append=bool(args.append),
+                skip_existing=bool(args.skip_existing),
+                dry_run=bool(args.dry_run),
+                max_windows=args.max_windows,
+                workers=int(args.workers),
+                debug=bool(args.debug),
+            )
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+        return 0
+
+    p_qa.set_defaults(func=_cmd_extract_qa)
 
     p_index = sub.add_parser(
         "build-index",

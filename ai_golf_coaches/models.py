@@ -84,3 +84,42 @@ class TranscriptFile(BaseModel):
     channel_key: str
     chunks: List[TranscriptChunk]
     generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class QARecord(BaseModel):
+    """A question-answer pair extracted from a livestream transcript.
+
+    Attributes:
+        qa_id (str): Deterministic identifier for the QA pair.
+        channel_key (str): Canonical channel key (e.g., elitegolfschools).
+        video_id (str): YouTube video ID.
+        question (str): The viewer's question text.
+        answer (str): The coach's answer text.
+        question_start (float): Start time (seconds) for the question.
+        question_end (float | None): End time (seconds) for the question, if known.
+        answer_start (float): Start time (seconds) for the answer.
+        answer_end (float | None): End time (seconds) for the answer, if known.
+        window_start (float | None): Start time of the extraction window.
+        window_end (float | None): End time of the extraction window.
+        source (str): Source type label (e.g., "livestream").
+        model (str): Model used for extraction.
+        prompt_version (str): Prompt version identifier.
+        extracted_at (datetime): Timestamp when the record was created.
+
+    """
+
+    qa_id: str
+    channel_key: str
+    video_id: str
+    question: str
+    answer: str
+    question_start: float
+    question_end: Optional[float] = None
+    answer_start: float
+    answer_end: Optional[float] = None
+    window_start: Optional[float] = None
+    window_end: Optional[float] = None
+    source: str = Field(default="livestream")
+    model: str
+    prompt_version: str
+    extracted_at: datetime = Field(default_factory=datetime.utcnow)
